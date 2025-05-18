@@ -33,8 +33,7 @@ FirebaseConfig config;
 
 // Firebase sync variables
 unsigned long lastFirebaseSync = 0;
-const unsigned long FIREBASE_SYNC_INTERVAL = 30000; // 30 seconds
-// const unsigned long FIREBASE_SYNC_INTERVAL = 300000; // 5 minutes
+const unsigned long FIREBASE_SYNC_INTERVAL = 300000; // 5 minutes
 bool firebaseInitialized = false;
 
 // Constants for preferences and logging
@@ -531,7 +530,7 @@ void loop() {
 
     // Handle RTC and SD logging
     if (rtcOK && sdOK) {
-        if (millis() - lastLogMillis >= 30000 || firstLog) {
+        if (millis() - lastLogMillis >= FIREBASE_SYNC_INTERVAL || firstLog) {
             lastLogMillis = millis();
             firstLog = false;
 
