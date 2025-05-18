@@ -8,6 +8,7 @@
 #include <Firebase_ESP_Client.h>
 #include <addons/TokenHelper.h>
 #include <addons/RTDBHelper.h>
+#include <time.h>
 
 // Pin definitions
 #define RTC_SDA 21
@@ -59,6 +60,11 @@ struct TripData {
 };
 
 std::vector<TripData> pendingTrips;
+
+// NTP Server settings
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 19800;  // Replace with your timezone offset in seconds (e.g., IST = UTC+5:30 = 5.5*3600)
+const int   daylightOffset_sec = 0;
 
 // Format DateTime as YY-MM-DD HH:MM:SS
 String formatDateTime(const DateTime& dt) {
@@ -240,6 +246,41 @@ void initializeRTCAndSD() {
     }
 }
 
+// Function to sync time with NTP
+void syncTimeWithNTP() {
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    
+    Serial.println("Waiting for NTP time sync...");
+    time_t now = time(nullptr);
+    int retries = 10;
+    while (now < 24 * 3600 && retries-- > 0) {
+        Serial.print(".");
+        delay(1000);
+        now = time(nullptr);
+    }
+    Serial.println();
+
+    if (now > 24 * 3600) {
+        struct tm timeinfo;
+        getLocalTime(&timeinfo);
+        
+        // Set RTC time from NTP
+        rtc.adjust(DateTime(
+            timeinfo.tm_year + 1900,
+            timeinfo.tm_mon + 1,
+            timeinfo.tm_mday,
+            timeinfo.tm_hour,
+            timeinfo.tm_min,
+            timeinfo.tm_sec
+        ));
+        
+        Serial.println("Time synchronized with NTP");
+        Serial.printf("Current time: %s\n", formatDateTime(rtc.now()).c_str());
+    } else {
+        Serial.println("Failed to get NTP time");
+    }
+}
+
 // Function to initialize Firebase
 void initFirebase() {
     if (WiFi.status() != WL_CONNECTED) {
@@ -251,9 +292,14 @@ void initFirebase() {
     
     config.database_url = FIREBASE_DATABASE_URL;
     config.api_key = FIREBASE_API_KEY;
-    config.service_account.data.project_id = FIREBASE_PROJECT_ID;
 
-    // Initialize Firebase with auto token generation
+    // Required for ESP32 because it doesn't have native RTC
+    config.timeout.serverResponse = 10 * 1000;
+
+    // Anonymous authentication
+    auth.user.is_authenticated = true;
+
+    // Initialize Firebase
     Firebase.begin(&config, &auth);
     Firebase.reconnectWiFi(true);
 
@@ -426,7 +472,8 @@ void setup() {
             Serial.println(WiFi.SSID());
             Serial.println(WiFi.localIP().toString());
             
-            // Initialize Firebase after WiFi is connected
+            // Sync time and initialize Firebase after WiFi is connected
+            syncTimeWithNTP();
             initFirebase();
             
             Serial.println("Connected to WiFi!");
@@ -448,7 +495,8 @@ void setup() {
     Serial.println(WiFi.SSID());
     Serial.println(WiFi.localIP().toString());
     
-    // Initialize Firebase after successful WiFi connection
+    // Sync time and initialize Firebase after successful WiFi connection
+    syncTimeWithNTP();
     initFirebase();
 }
 
