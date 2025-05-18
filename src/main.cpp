@@ -247,26 +247,47 @@ void initFirebase() {
         return;
     }
 
-    config.api_key = FIREBASE_API_KEY;
-    config.database_url = FIREBASE_DATABASE_URL;
-
-    auth.token.uid = "ESP32_DEVICE";
-
     Serial.println("Initializing Firebase...");
+    
+    config.database_url = FIREBASE_DATABASE_URL;
+    config.api_key = FIREBASE_API_KEY;
+    config.service_account.data.project_id = FIREBASE_PROJECT_ID;
+
+    // Initialize Firebase with auto token generation
     Firebase.begin(&config, &auth);
     Firebase.reconnectWiFi(true);
 
-    // Wait for initialization
+    // Set database read timeout to 1 minute
+    Firebase.RTDB.setReadTimeout(&fbdo, 1000 * 60);
+    // Set database write timeout to 30 seconds
+    Firebase.RTDB.setwriteSizeLimit(&fbdo, "tiny");
+
+    // Wait for initialization and token generation
+    Serial.println("Waiting for Firebase token...");
     unsigned long startTime = millis();
-    while (!Firebase.ready() && millis() - startTime < 10000) {
-        delay(100);
+    while (!Firebase.ready() && millis() - startTime < 30000) {
+        Serial.print(".");
+        delay(1000);
     }
+    Serial.println();
 
     if (Firebase.ready()) {
         firebaseInitialized = true;
-        Serial.println("Firebase initialized successfully");
+        Serial.println("Firebase initialized successfully!");
+        
+        // Test connection by writing to a test path
+        FirebaseJson json;
+        json.set("test", "Connection successful");
+        json.set("timestamp", rtc.now().unixtime());
+        
+        if (Firebase.RTDB.setJSON(&fbdo, "test/connection", &json)) {
+            Serial.println("Test write successful");
+        } else {
+            Serial.printf("Test write failed: %s\n", fbdo.errorReason().c_str());
+        }
     } else {
-        Serial.println("Firebase initialization failed");
+        Serial.println("Firebase initialization failed!");
+        Serial.println("Please check your credentials and internet connection");
     }
 }
 
@@ -294,17 +315,15 @@ bool publishTripToFirebase(const TripData& trip) {
     json.set("endTime", trip.endTime);
     json.set("duration", trip.duration);
     json.set("status", "OK");
-
-    // Add a timestamp
-    char timestamp[32];
-    sprintf(timestamp, "%04d-%02d-%02d %02d:%02d:%02d", 
-            rtc.now().year(), rtc.now().month(), rtc.now().day(),
-            rtc.now().hour(), rtc.now().minute(), rtc.now().second());
-    json.set("uploadTime", timestamp);
+    json.set("uploadTimestamp", rtc.now().unixtime());
 
     bool success = false;
     int retries = 3;
+    
     while (retries > 0 && !success) {
+        Serial.printf("Attempting to publish trip %d (attempt %d)...\n", 
+                     trip.number, 4 - retries);
+                     
         if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
             Serial.printf("Trip %d published to Firebase successfully\n", trip.number);
             success = true;
