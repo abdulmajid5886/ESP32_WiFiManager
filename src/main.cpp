@@ -296,12 +296,18 @@ void initFirebase() {
     // Required for ESP32 because it doesn't have native RTC
     config.timeout.serverResponse = 10 * 1000;
 
-    // Anonymous authentication
-    auth.user.is_authenticated = true;
-
-    // Initialize Firebase
+    // Initialize Firebase with anonymous authentication
     Firebase.begin(&config, &auth);
     Firebase.reconnectWiFi(true);
+
+    // Sign in anonymously
+    if (Firebase.signUp(&config, &auth, "", "")) {
+        Serial.println("Anonymous sign-up success");
+        firebaseInitialized = true;
+    } else {
+        Serial.printf("Anonymous sign-up failed: %s\n", config.signer.signupError.message.c_str());
+        return;
+    }
 
     // Set database read timeout to 1 minute
     Firebase.RTDB.setReadTimeout(&fbdo, 1000 * 60);
