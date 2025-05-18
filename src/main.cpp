@@ -1,10 +1,13 @@
-#include <WiFiManager.h> // https://github.com/tzapu/WiFiManager
+#include <WiFiManager.h>
 #include <WiFiMulti.h>
 #include <Preferences.h>
 #include <Wire.h>
 #include <RTClib.h>
 #include <SPI.h>
 #include <SD.h>
+#include <Firebase_ESP_Client.h>
+#include <addons/TokenHelper.h>
+#include <addons/RTDBHelper.h>
 
 // Pin definitions
 #define RTC_SDA 21
@@ -22,6 +25,16 @@ Preferences preferences;
 RTC_DS3231 rtc;
 File logFile;
 
+// Firebase objects
+FirebaseData fbdo;
+FirebaseAuth auth;
+FirebaseConfig config;
+
+// Firebase sync variables
+unsigned long lastFirebaseSync = 0;
+const unsigned long FIREBASE_SYNC_INTERVAL = 300000; // 5 minutes
+bool signupOK = false;
+
 // Constants for preferences and logging
 const char* PREF_NAMESPACE = "wifi_creds";
 const int MAX_NETWORKS = 5;  // Maximum number of networks to store
@@ -34,6 +47,17 @@ unsigned long lastLogMillis = 0;
 int tripNumber = 0;
 bool rtcOK = false, sdOK = false;
 bool firstLog = true;
+
+// Modified trip logging variables to include sync status
+struct TripData {
+    int number;
+    String startTime;
+    String endTime;
+    String duration;
+    bool synced;
+};
+
+std::vector<TripData> pendingTrips;
 
 // Format DateTime as YY-MM-DD HH:MM:SS
 String formatDateTime(const DateTime& dt) {
@@ -215,6 +239,75 @@ void initializeRTCAndSD() {
     }
 }
 
+// Function to initialize Firebase
+void initFirebase() {
+    config.api_key = FIREBASE_API_KEY;
+    config.database_url = FIREBASE_DATABASE_URL;
+
+    auth.token.uid = "ESP32_DEVICE";
+
+    Firebase.begin(&config, &auth);
+    Firebase.reconnectWiFi(true);
+}
+
+// Function to save trip to Firebase
+bool publishTripToFirebase(const TripData& trip) {
+    if (Firebase.ready() && WiFi.status() == WL_CONNECTED) {
+        String path = "trips/" + String(trip.number);
+        
+        FirebaseJson json;
+        json.set("tripNumber", trip.number);
+        json.set("startTime", trip.startTime);
+        json.set("endTime", trip.endTime);
+        json.set("duration", trip.duration);
+        json.set("status", "OK");
+
+        if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
+            Serial.printf("Trip %d published to Firebase\n", trip.number);
+            return true;
+        } else {
+            Serial.printf("Firebase publish failed: %s\n", fbdo.errorReason().c_str());
+            return false;
+        }
+    }
+    return false;
+}
+
+// Function to read and publish pending trips
+void syncPendingTrips() {
+    if (!rtcOK || !sdOK || !WiFi.isConnected()) return;
+
+    File file = SD.open(filename, FILE_READ);
+    if (!file) return;
+
+    String line;
+    while (file.available()) {
+        line = file.readStringUntil('\n');
+        if (line.length() > 0 && isDigit(line.charAt(0))) {
+            // Parse CSV line
+            int comma1 = line.indexOf(',');
+            int comma2 = line.indexOf(',', comma1 + 1);
+            int comma3 = line.indexOf(',', comma2 + 1);
+            
+            if (comma1 > 0 && comma2 > 0 && comma3 > 0) {
+                TripData trip;
+                trip.number = line.substring(0, comma1).toInt();
+                trip.startTime = line.substring(comma1 + 1, comma2);
+                trip.endTime = line.substring(comma2 + 1, comma3);
+                trip.duration = line.substring(comma3 + 1);
+                trip.synced = false;
+                
+                if (publishTripToFirebase(trip)) {
+                    trip.synced = true;
+                } else {
+                    pendingTrips.push_back(trip);
+                }
+            }
+        }
+    }
+    file.close();
+}
+
 void setup() {
     Serial.begin(115200);
     Serial.println("\n Starting");
@@ -268,6 +361,13 @@ void setup() {
             Serial.println("Connected to WiFi!");
             Serial.println(WiFi.SSID());
             Serial.println(WiFi.localIP().toString());
+            
+            // Initialize Firebase after WiFi is connected
+            initFirebase();
+            
+            Serial.println("Connected to WiFi!");
+            Serial.println(WiFi.SSID());
+            Serial.println(WiFi.localIP().toString());
             return;
         }
     }
@@ -317,16 +417,51 @@ void loop() {
             DateTime now = rtc.now();
             TimeSpan duration = now - tripStartTime;
 
-            String logLine = String(tripNumber) + "," + formatDateTime(tripStartTime) + "," + 
-                           formatDateTime(now) + "," + formatDuration(duration);
+            TripData currentTrip;
+            currentTrip.number = tripNumber;
+            currentTrip.startTime = formatDateTime(tripStartTime);
+            currentTrip.endTime = formatDateTime(now);
+            currentTrip.duration = formatDuration(duration);
+            currentTrip.synced = false;
+
+            String logLine = String(currentTrip.number) + "," + 
+                           currentTrip.startTime + "," + 
+                           currentTrip.endTime + "," + 
+                           currentTrip.duration;
 
             Serial.println(logLine);
 
+            // Save to SD card
             logFile = SD.open(filename, FILE_APPEND);
             if (logFile) {
                 logFile.println(logLine);
                 logFile.close();
             }
+
+            // Try to publish to Firebase
+            if (!publishTripToFirebase(currentTrip)) {
+                pendingTrips.push_back(currentTrip);
+            }
+        }
+
+        // Handle Firebase sync interval
+        if (WiFi.isConnected() && millis() - lastFirebaseSync >= FIREBASE_SYNC_INTERVAL) {
+            lastFirebaseSync = millis();
+            
+            // Try to publish any pending trips
+            if (!pendingTrips.empty()) {
+                auto it = pendingTrips.begin();
+                while (it != pendingTrips.end()) {
+                    if (publishTripToFirebase(*it)) {
+                        it = pendingTrips.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
+
+            // Sync any trips from SD card that might have been missed
+            syncPendingTrips();
         }
     }
     

@@ -1,6 +1,6 @@
-# ESP32 WiFi Manager
+# ESP32 WiFi Manager with Trip Logger
 
-A smart and efficient WiFi configuration manager for ESP32 devices that supports multiple networks and provides an easy-to-use web interface for setup.
+A smart WiFi configuration manager for ESP32 devices with integrated trip logging functionality, featuring RTC-based time tracking, SD card storage, and Firebase synchronization.
 
 ## Features
 
@@ -26,18 +26,59 @@ A smart and efficient WiFi configuration manager for ESP32 devices that supports
   - Attempts reconnection to all saved networks
   - Falls back to configuration portal as last resort
   - Auto-restarts after new configuration
+- **Trip Logging System**:
+  - Real-time trip tracking with RTC
+  - Local storage on SD card
+  - Automatic Firebase synchronization
+  - Offline operation capability
+  - Break time tracking between trips
+- **Data Synchronization**:
+  - 5-minute interval Firebase updates
+  - Automatic retry for failed uploads
+  - Status tracking for each trip
+  - Persistent storage of unsent data
+  - WiFi-dependent sync mechanism
 
 ## Hardware Requirements
 
 - ESP32 Development Board
+- DS3231 RTC Module
+- SD Card Module
+- Status LEDs (2x)
 - USB Cable for programming
+
+## Pin Configuration
+
+```
+RTC_SDA: GPIO21
+RTC_SCL: GPIO22
+SD_CS:   GPIO5
+RTC_FAULT_LED: GPIO33
+SD_FAULT_LED:  GPIO25
+```
 
 ## Software Dependencies
 
 - ESP32 Arduino Core
 - WiFiManager library
 - WiFiMulti library
-- ESP32 Preferences library (built-in)
+- ESP32 Preferences library
+- RTClib
+- SD library
+- Firebase ESP32 Client
+
+## Firebase Setup
+
+1. **Create Firebase Project**:
+   - Go to Firebase Console
+   - Create a new project
+   - Enable Realtime Database
+   - Get your database URL and API key
+
+2. **Configure Firebase Credentials**:
+   - Open platformio.ini
+   - Update FIREBASE_DATABASE_URL
+   - Update FIREBASE_API_KEY
 
 ## How It Works
 
@@ -59,11 +100,30 @@ A smart and efficient WiFi configuration manager for ESP32 devices that supports
    - Maintains up to 5 different network configurations
    - Connects to the strongest available network
 
-4. **Configuration Options**:
-   - WiFi SSID and Password
-   - Stores multiple network credentials
-   - Custom IP Address
-   - Gateway Address
+4. **Trip Logging System**:
+   - Initializes RTC and SD card
+   - Creates/opens trip log file
+   - Records trip start time
+   - Calculates and logs break duration
+   - Generates unique trip numbers
+
+5. **Data Storage Flow**:
+   - Records trip data every 30 seconds
+   - Stores data on SD card
+   - Attempts immediate Firebase upload
+   - Queues failed uploads for retry
+
+6. **Firebase Synchronization**:
+   - Attempts upload every 5 minutes
+   - Marks successful uploads as "OK"
+   - Retries failed uploads automatically
+   - Maintains sync queue in memory
+
+7. **Error Handling**:
+   - LED indicators for hardware faults
+   - Offline operation capability
+   - Automatic error recovery
+   - Data integrity protection
 
 ## Usage
 
@@ -94,6 +154,26 @@ A smart and efficient WiFi configuration manager for ESP32 devices that supports
    - Device will try all saved networks before entering AP mode
    - Serial monitor (115200 baud) shows detailed connection status
 
+5. **RTC Issues**:
+   - Check if RTC_FAULT_LED is lit
+   - Verify I2C connections
+   - Check RTC battery
+
+6. **SD Card Issues**:
+   - Check if SD_FAULT_LED is lit
+   - Verify card is properly formatted (FAT32)
+   - Check SPI connections
+
+7. **Firebase Sync Issues**:
+   - Check WiFi connectivity
+   - Verify Firebase credentials
+   - Monitor serial output for error messages
+
+8. **Data Recovery**:
+   - All trip data is stored on SD card
+   - Firebase sync will retry automatically
+   - Manual data export possible via SD card
+
 ## File Structure
 
 ```
@@ -102,17 +182,81 @@ ESP32_WiFiManager/
 │   └── wifimanager.html    # Configuration portal webpage
 ├── src/
 │   └── main.cpp            # Main application code
-└── platformio.ini          # PlatformIO configuration
+├── platformio.ini          # PlatformIO configuration and Firebase credentials
+└── README.md              # Project documentation
+```
+
+## Trip Log Format
+
+The trip log file (trip_log.csv) contains the following columns:
+```
+Trip No., Start DateTime, End DateTime, Duration
+```
+
+Example:
+```
+1, 23-05-18 10:00:00, 23-05-18 10:30:00, 00:30:00
+Trip 1 Duration:, 00:30:00
+Break Time:, 00:15:00
+2, 23-05-18 10:45:00, 23-05-18 11:15:00, 00:30:00
+```
+
+## Firebase Data Structure
+
+Trips are stored in Firebase with the following structure:
+```json
+{
+  "trips": {
+    "1": {
+      "tripNumber": 1,
+      "startTime": "23-05-18 10:00:00",
+      "endTime": "23-05-18 10:30:00",
+      "duration": "00:30:00",
+      "status": "OK"
+    }
+  }
+}
 ```
 
 ## Development
 
-This project is built using PlatformIO. To modify or upload:
+1. **Initial Setup**:
+   ```bash
+   # Clone repository
+   git clone [repository-url]
+   cd ESP32_WiFiManager
 
-1. Clone the repository
-2. Open in PlatformIO
-3. Upload filesystem image (for web interface)
-4. Upload the code
+   # Install dependencies (using PlatformIO)
+   pio pkg install
+   ```
+
+2. **Configure Firebase**:
+   - Update platformio.ini with your Firebase credentials:
+     ```ini
+     build_flags = 
+         '-DFIREBASE_DATABASE_URL="your-database-url"'
+         '-DFIREBASE_API_KEY="your-api-key"'
+     ```
+
+3. **Hardware Setup**:
+   - Connect RTC to SDA (GPIO21) and SCL (GPIO22)
+   - Connect SD card module to GPIO5 (CS)
+   - Connect status LEDs to GPIO33 and GPIO25
+
+4. **Upload Code**:
+   ```bash
+   # Upload filesystem
+   pio run -t uploadfs
+   
+   # Upload code
+   pio run -t upload
+   ```
+
+5. **Monitoring**:
+   ```bash
+   # Monitor serial output
+   pio device monitor
+   ```
 
 ## Reset Configuration
 
