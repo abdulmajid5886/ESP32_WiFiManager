@@ -32,8 +32,9 @@ FirebaseConfig config;
 
 // Firebase sync variables
 unsigned long lastFirebaseSync = 0;
-const unsigned long FIREBASE_SYNC_INTERVAL = 300000; // 5 minutes
-bool signupOK = false;
+const unsigned long FIREBASE_SYNC_INTERVAL = 30000; // 30 seconds
+// const unsigned long FIREBASE_SYNC_INTERVAL = 300000; // 5 minutes
+bool firebaseInitialized = false;
 
 // Constants for preferences and logging
 const char* PREF_NAMESPACE = "wifi_creds";
@@ -241,36 +242,80 @@ void initializeRTCAndSD() {
 
 // Function to initialize Firebase
 void initFirebase() {
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("Cannot initialize Firebase: No WiFi connection");
+        return;
+    }
+
     config.api_key = FIREBASE_API_KEY;
     config.database_url = FIREBASE_DATABASE_URL;
 
     auth.token.uid = "ESP32_DEVICE";
 
+    Serial.println("Initializing Firebase...");
     Firebase.begin(&config, &auth);
     Firebase.reconnectWiFi(true);
+
+    // Wait for initialization
+    unsigned long startTime = millis();
+    while (!Firebase.ready() && millis() - startTime < 10000) {
+        delay(100);
+    }
+
+    if (Firebase.ready()) {
+        firebaseInitialized = true;
+        Serial.println("Firebase initialized successfully");
+    } else {
+        Serial.println("Firebase initialization failed");
+    }
 }
 
 // Function to save trip to Firebase
 bool publishTripToFirebase(const TripData& trip) {
-    if (Firebase.ready() && WiFi.status() == WL_CONNECTED) {
-        String path = "trips/" + String(trip.number);
-        
-        FirebaseJson json;
-        json.set("tripNumber", trip.number);
-        json.set("startTime", trip.startTime);
-        json.set("endTime", trip.endTime);
-        json.set("duration", trip.duration);
-        json.set("status", "OK");
-
-        if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
-            Serial.printf("Trip %d published to Firebase\n", trip.number);
-            return true;
-        } else {
-            Serial.printf("Firebase publish failed: %s\n", fbdo.errorReason().c_str());
+    if (!firebaseInitialized) {
+        Serial.println("Firebase not initialized, attempting to initialize...");
+        initFirebase();
+        if (!firebaseInitialized) {
+            Serial.println("Firebase initialization failed, cannot publish trip");
             return false;
         }
     }
-    return false;
+
+    if (!Firebase.ready() || WiFi.status() != WL_CONNECTED) {
+        Serial.println("Firebase not ready or WiFi not connected");
+        return false;
+    }
+
+    String path = "trips/" + String(trip.number);
+    
+    FirebaseJson json;
+    json.set("tripNumber", trip.number);
+    json.set("startTime", trip.startTime);
+    json.set("endTime", trip.endTime);
+    json.set("duration", trip.duration);
+    json.set("status", "OK");
+
+    // Add a timestamp
+    char timestamp[32];
+    sprintf(timestamp, "%04d-%02d-%02d %02d:%02d:%02d", 
+            rtc.now().year(), rtc.now().month(), rtc.now().day(),
+            rtc.now().hour(), rtc.now().minute(), rtc.now().second());
+    json.set("uploadTime", timestamp);
+
+    bool success = false;
+    int retries = 3;
+    while (retries > 0 && !success) {
+        if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
+            Serial.printf("Trip %d published to Firebase successfully\n", trip.number);
+            success = true;
+        } else {
+            Serial.printf("Firebase publish failed: %s\nRetrying... (%d attempts left)\n", 
+                        fbdo.errorReason().c_str(), retries - 1);
+            retries--;
+            delay(1000);
+        }
+    }
+    return success;
 }
 
 // Function to read and publish pending trips
@@ -383,6 +428,9 @@ void setup() {
     Serial.println("Connected to WiFi!");
     Serial.println(WiFi.SSID());
     Serial.println(WiFi.localIP().toString());
+    
+    // Initialize Firebase after successful WiFi connection
+    initFirebase();
 }
 
 void loop() {
