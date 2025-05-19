@@ -33,7 +33,8 @@ FirebaseConfig config;
 
 // Firebase sync variables
 unsigned long lastFirebaseSync = 0;
-const unsigned long FIREBASE_SYNC_INTERVAL = 300000; // 5 minutes
+const unsigned long FIREBASE_SYNC_INTERVAL = 60000; // 1 minutes
+// const unsigned long FIREBASE_SYNC_INTERVAL = 300000; // 5 minutes
 bool firebaseInitialized = false;
 
 // Constants for preferences and logging
@@ -55,6 +56,7 @@ struct TripData {
     String startTime;
     String endTime;
     String duration;
+    String breakTime;  // Added break time field
     bool synced;
 };
 
@@ -62,7 +64,7 @@ std::vector<TripData> pendingTrips;
 
 // NTP Server settings
 const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = 19800;  // Replace with your timezone offset in seconds (e.g., IST = UTC+5:30 = 5.5*3600)
+const long  gmtOffset_sec = 18000;  // Replace with your timezone offset in seconds (e.g., IST = UTC+5:00 = 5.0*3600)
 const int   daylightOffset_sec = 0;
 
 // Format DateTime as YY-MM-DD HH:MM:SS
@@ -236,7 +238,7 @@ void initializeRTCAndSD() {
         if (!SD.exists(filename) || SD.open(filename, FILE_READ).size() == 0) {
             logFile = SD.open(filename, FILE_WRITE);
             if (logFile) {
-                logFile.println("Trip No.,Start DateTime,End DateTime,Duration");
+                logFile.println("Trip No.,Start DateTime,End DateTime,Duration,Break Time");
                 logFile.close();
             }
         }
@@ -365,6 +367,7 @@ bool publishTripToFirebase(const TripData& trip) {
     json.set("startTime", trip.startTime);
     json.set("endTime", trip.endTime);
     json.set("duration", trip.duration);
+    json.set("breakTime", trip.breakTime);
     json.set("status", "OK");
     json.set("uploadTimestamp", rtc.now().unixtime());
 
@@ -404,12 +407,14 @@ void syncPendingTrips() {
             int comma2 = line.indexOf(',', comma1 + 1);
             int comma3 = line.indexOf(',', comma2 + 1);
             
-            if (comma1 > 0 && comma2 > 0 && comma3 > 0) {
+            int comma4 = line.indexOf(',', comma3 + 1);
+            if (comma1 > 0 && comma2 > 0 && comma3 > 0 && comma4 > 0) {
                 TripData trip;
                 trip.number = line.substring(0, comma1).toInt();
                 trip.startTime = line.substring(comma1 + 1, comma2);
                 trip.endTime = line.substring(comma2 + 1, comma3);
-                trip.duration = line.substring(comma3 + 1);
+                trip.duration = line.substring(comma3 + 1, comma4);
+                trip.breakTime = line.substring(comma4 + 1);
                 trip.synced = false;
                 
                 if (publishTripToFirebase(trip)) {
@@ -507,25 +512,41 @@ void setup() {
 
 void loop() {
     // Handle WiFi connection
-    if (wifiMulti.run() != WL_CONNECTED) {
-        Serial.println("WiFi disconnected!");
+    static unsigned long lastWiFiCheck = 0;
+    static bool portalStarted = false;
+    const unsigned long WIFI_CHECK_INTERVAL = 300000; // Check WiFi every 5 minutes
+    
+    if (WiFi.status() != WL_CONNECTED && !portalStarted) {
+        unsigned long currentMillis = millis();
         
-        // Try to connect to saved networks for 10 seconds
-        unsigned long startAttemptTime = millis();
-        while (wifiMulti.run() != WL_CONNECTED && millis() - startAttemptTime < 10000) {
-            delay(500);
-            Serial.print(".");
-        }
-        
-        // If still not connected, start config portal
-        if (WiFi.status() != WL_CONNECTED) {
-            Serial.println("\nCouldn't connect to any saved networks");
-            if (!wm.startConfigPortal("WASA Grw", "12345678")) {
-                Serial.println("Failed to connect or hit timeout");
-                delay(3000);
-                ESP.restart();
+        // Only try reconnecting every 5 minutes
+        if (currentMillis - lastWiFiCheck >= WIFI_CHECK_INTERVAL) {
+            lastWiFiCheck = currentMillis;
+            Serial.println("WiFi disconnected! Attempting to reconnect...");
+            
+            // Try to connect to saved networks
+            if (wifiMulti.run(5000) == WL_CONNECTED) { // 5 second timeout for connection attempt
+                Serial.println("Reconnected to WiFi!");
+                Serial.println(WiFi.SSID());
+                Serial.println(WiFi.localIP().toString());
+                portalStarted = false;
+            } else {
+                // Only start portal if it hasn't been started yet
+                if (!portalStarted) {
+                    Serial.println("Couldn't connect to any saved networks");
+                    Serial.println("Starting config portal...");
+                    portalStarted = true;
+                    
+                    if (!wm.startConfigPortal("WASA Grw", "12345678")) {
+                        Serial.println("Failed to connect or hit timeout");
+                        portalStarted = false;
+                        lastWiFiCheck = currentMillis - WIFI_CHECK_INTERVAL + 60000; // Try again in 1 minute
+                    }
+                }
             }
         }
+    } else if (WiFi.status() == WL_CONNECTED) {
+        portalStarted = false; // Reset portal flag when connected
     }
 
     // Handle RTC and SD logging
@@ -536,19 +557,34 @@ void loop() {
 
             DateTime now = rtc.now();
             TimeSpan duration = now - tripStartTime;
+            TimeSpan breakDuration(0);
+            
+            if (lastEndTime.unixtime() > 0) {
+                breakDuration = tripStartTime - lastEndTime;
+            }
 
             TripData currentTrip;
             currentTrip.number = tripNumber;
             currentTrip.startTime = formatDateTime(tripStartTime);
             currentTrip.endTime = formatDateTime(now);
             currentTrip.duration = formatDuration(duration);
+            currentTrip.breakTime = formatDuration(breakDuration);
             currentTrip.synced = false;
 
             String logLine = String(currentTrip.number) + "," + 
                            currentTrip.startTime + "," + 
                            currentTrip.endTime + "," + 
-                           currentTrip.duration;
+                           currentTrip.duration + "," +
+                           currentTrip.breakTime;
 
+            // Detailed logging for debugging
+            Serial.println("\n--- Trip Logging Details ---");
+            Serial.printf("Trip Number: %d\n", currentTrip.number);
+            Serial.printf("Start Time: %s\n", currentTrip.startTime.c_str());
+            Serial.printf("End Time: %s\n", currentTrip.endTime.c_str());
+            Serial.printf("Trip Duration: %s\n", currentTrip.duration.c_str());
+            Serial.printf("Break Time: %s\n", currentTrip.breakTime.c_str());
+            Serial.println("Full CSV Line:");
             Serial.println(logLine);
 
             // Save to SD card
@@ -556,6 +592,25 @@ void loop() {
             if (logFile) {
                 logFile.println(logLine);
                 logFile.close();
+                Serial.println("Successfully wrote to SD card");
+                
+                // Read back and verify the last few lines
+                File readFile = SD.open(filename, FILE_READ);
+                if (readFile) {
+                    Serial.println("\nLast entries in SD card:");
+                    // Calculate seek position ensuring it doesn't go negative
+                    size_t seekPos = (readFile.size() > 512) ? (readFile.size() - 512) : 0;
+                    readFile.seek(seekPos);
+                    while (readFile.available()) {
+                        String line = readFile.readStringUntil('\n');
+                        if (line.length() > 0) {
+                            Serial.println(line);
+                        }
+                    }
+                    readFile.close();
+                }
+            } else {
+                Serial.println("Failed to write to SD card!");
             }
 
             // Try to publish to Firebase
