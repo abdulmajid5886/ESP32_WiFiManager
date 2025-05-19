@@ -49,6 +49,14 @@ FirebaseConfig config;
 unsigned long lastFirebaseSync = 0;
 bool firebaseInitialized = false;
 
+// Function declarations
+void checkPowerStatus();
+void syncTimeWithNTP();
+void initFirebase();
+bool attemptWiFiConnection(bool isInitialConnection = false);
+void saveConfigCallback();
+void initializeRTCAndSD();
+
 // Constants for preferences and logging
 const char* PREF_NAMESPACE = "wifi_creds";
 const int MAX_NETWORKS = 5;  // Maximum number of networks to store
@@ -194,7 +202,7 @@ void handleUploadLED() {
 }
 
 // Function to attempt WiFi connection with timeout
-bool attemptWiFiConnection(bool isInitialConnection = false) {
+bool attemptWiFiConnection(bool isInitialConnection) {
     unsigned long startAttempt = millis();
     Serial.println(isInitialConnection ? "Attempting initial WiFi connection..." : "Attempting periodic WiFi reconnection...");
     
