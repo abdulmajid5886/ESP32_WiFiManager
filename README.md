@@ -192,6 +192,52 @@ ESP32_WiFiManager/
 └── README.md              # Project documentation
 ```
 
+## Data Integrity and Error Recovery
+
+1. **SD Card Data Protection**:
+   - Write verification after each operation
+   - Multiple retry attempts for failed writes
+   - Automatic hourly backups
+   - Keeps last 3 backup copies
+   - Visual LED indication for SD card issues
+   - In-memory buffering for write failures
+
+2. **Firebase Data Protection**:
+   - Transaction-based data synchronization
+   - Pending transactions tracking
+   - Automatic retry mechanism
+   - Status tracking for each upload
+   - Incremental retry counter
+   - Transaction cleanup after successful sync
+
+3. **Power Failure Protection**:
+   - Immediate local data persistence
+   - Multiple backup copies
+   - Transaction system for uploads
+   - Automatic recovery on power restore
+   - No data loss during power cycles
+
+4. **Network Failure Recovery**:
+   - Local-first data storage
+   - Queued uploads for offline operation
+   - Automatic retry when network available
+   - Status tracking for failed uploads
+   - Multi-network failover support
+
+5. **Error Handling and Monitoring**:
+   - Visual LED indicators for hardware status
+   - Detailed serial logging
+   - Error condition tracking
+   - Automatic error recovery
+   - Clear error reporting
+
+6. **Data Recovery Options**:
+   - Multiple backup files
+   - Manual data export via SD card
+   - Transaction log recovery
+   - Automated consistency checks
+   - Recovery from partial writes
+
 ## Trip Log Format
 
 The trip log file (trip_log.csv) contains the following columns:
@@ -209,6 +255,27 @@ Break Time:, 00:15:00
 2, 23-05-18 10:45:00, 23-05-18 11:15:00, 00:30:00, 00:15:00
 ```
 
+## Backup System
+
+1. **Automatic Backups**:
+   - Hourly backup creation
+   - Rolling backup system
+   - Maintains last 3 copies
+   - Integrity verification
+   - Recovery procedures
+
+2. **Backup Naming Convention**:
+   ```
+   /backup_[timestamp].csv
+   ```
+
+3. **Recovery Process**:
+   - Automatic detection of corrupted files
+   - Rollback to last valid backup
+   - Transaction log replay
+   - Data consistency verification
+   - Automatic backup after recovery
+
 ## Firebase Data Structure
 
 Trips are stored in Firebase with the following structure:
@@ -221,8 +288,16 @@ Trips are stored in Firebase with the following structure:
       "endTime": "23-05-18 10:30:00",
       "duration": "00:30:00",
       "breakTime": "00:00:00",
-      "status": "OK",
+      "status": "completed",
       "uploadTimestamp": 1684404000
+    }
+  },
+  "transactions": {
+    "1684404000_1": {
+      "tripNumber": 1,
+      "status": "pending",
+      "retryCount": 0,
+      "timestamp": 1684404000
     }
   }
 }

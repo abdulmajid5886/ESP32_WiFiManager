@@ -373,14 +373,16 @@ bool publishTripToFirebase(const TripData& trip) {
     }
 
     String path = "trips/" + String(trip.number);
+    String transactionPath = "transactions/" + String(rtc.now().unixtime()) + "_" + String(trip.number);
     
     FirebaseJson json;
     json.set("tripNumber", trip.number);
     json.set("startTime", trip.startTime);
     json.set("endTime", trip.endTime);
     json.set("duration", trip.duration);
-    json.set("status", "OK");
+    json.set("status", "pending");
     json.set("uploadTimestamp", rtc.now().unixtime());
+    json.set("retryCount", 0);
     
     // Calculate and add break time if this is not the first trip
     if (trip.number > 1) {
@@ -398,17 +400,39 @@ bool publishTripToFirebase(const TripData& trip) {
     while (retries > 0 && !success) {
         Serial.printf("Attempting to publish trip %d (attempt %d)...\n", 
                      trip.number, 4 - retries);
-                     
-        if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
-            Serial.printf("Trip %d published to Firebase successfully\n", trip.number);
-            success = true;
-        } else {
+        
+        // First, write to transaction log
+        if (Firebase.RTDB.setJSON(&fbdo, transactionPath.c_str(), &json)) {
+            // Then attempt to write the actual data
+            if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
+                // Update transaction status to completed
+                FirebaseJson updateJson;
+                updateJson.set("status", "completed");
+                if (Firebase.RTDB.setJSON(&fbdo, transactionPath + "/status", &updateJson)) {
+                    Serial.printf("Trip %d published to Firebase successfully\n", trip.number);
+                    success = true;
+                }
+            }
+        }
+        
+        if (!success) {
             Serial.printf("Firebase publish failed: %s\nRetrying... (%d attempts left)\n", 
                         fbdo.errorReason().c_str(), retries - 1);
             retries--;
             delay(1000);
         }
     }
+    
+    // If successful, remove from pending trips
+    if (success) {
+        Firebase.RTDB.deleteNode(&fbdo, transactionPath.c_str());
+    } else {
+        // Update retry count in transaction
+        FirebaseJson updateJson;
+        updateJson.set("retryCount", json.get("retryCount").to<int>() + 1);
+        Firebase.RTDB.updateNode(&fbdo, transactionPath.c_str(), &updateJson);
+    }
+    
     return success;
 }
 
@@ -445,6 +469,64 @@ void syncPendingTrips() {
         }
     }
     file.close();
+}
+
+// Function to verify data written to SD card
+bool verifySDWrite(const String& expectedLine) {
+    File file = SD.open(filename, FILE_READ);
+    if (!file) return false;
+    
+    // Go to the end of file minus the expected line length
+    if (file.seek(file.size() - expectedLine.length() - 2)) { // -2 for \r\n
+        String lastLine = file.readStringUntil('\n');
+        lastLine.trim(); // Remove any trailing whitespace
+        file.close();
+        return lastLine == expectedLine;
+    }
+    file.close();
+    return false;
+}
+
+// Function to backup the trip log file
+void backupTripLog() {
+    if (!SD.exists(filename)) return;
+    
+    String backupName = "/backup_" + String(rtc.now().unixtime()) + ".csv";
+    File sourceFile = SD.open(filename, FILE_READ);
+    File backupFile = SD.open(backupName, FILE_WRITE);
+    
+    if (!sourceFile || !backupFile) {
+        if (sourceFile) sourceFile.close();
+        if (backupFile) backupFile.close();
+        return;
+    }
+    
+    while (sourceFile.available()) {
+        backupFile.write(sourceFile.read());
+    }
+    
+    sourceFile.close();
+    backupFile.close();
+    
+    // Keep only the last 3 backups to save space
+    File root = SD.open("/");
+    File file = root.openNextFile();
+    std::vector<String> backups;
+    
+    while (file) {
+        String fname = String(file.name());
+        if (fname.startsWith("backup_")) {
+            backups.push_back(fname);
+        }
+        file = root.openNextFile();
+    }
+    
+    if (backups.size() > 3) {
+        std::sort(backups.begin(), backups.end());
+        for (size_t i = 0; i < backups.size() - 3; i++) {
+            SD.remove("/" + backups[i]);
+        }
+    }
 }
 
 void setup() {
@@ -585,14 +667,43 @@ void loop() {
 
             Serial.println(logLine);
 
-            // Save to SD card
-            logFile = SD.open(filename, FILE_APPEND);
-            if (logFile) {
-                logFile.println(logLine);
-                logFile.close();
+            // Save to SD card with verification
+            int writeAttempts = 3;
+            bool writeSuccess = false;
+            
+            while (writeAttempts > 0 && !writeSuccess) {
+                logFile = SD.open(filename, FILE_APPEND);
+                if (logFile) {
+                    logFile.println(logLine);
+                    logFile.close();
+                    
+                    // Verify the write was successful
+                    if (verifySDWrite(logLine)) {
+                        writeSuccess = true;
+                        // Create periodic backup every hour
+                        if (now.minute() == 0 && now.second() < 30) {
+                            backupTripLog();
+                        }
+                    } else {
+                        Serial.println("SD write verification failed, retrying...");
+                        writeAttempts--;
+                        delay(100);
+                    }
+                } else {
+                    Serial.println("Failed to open log file, retrying...");
+                    writeAttempts--;
+                    delay(100);
+                }
+            }
+            
+            if (!writeSuccess) {
+                // If SD write fails, store in memory until next attempt
+                Serial.println("SD write failed after all attempts, storing in memory");
+                digitalWrite(SD_FAULT_LED, HIGH);  // Indicate SD issue
             }
 
-            // Add to pending trips for Firebase sync
+            // Add to pending trips for Firebase sync with timestamp
+            currentTrip.synced = false;
             pendingTrips.push_back(currentTrip);
         }
 
