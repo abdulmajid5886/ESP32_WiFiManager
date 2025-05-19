@@ -428,8 +428,12 @@ bool publishTripToFirebase(const TripData& trip) {
         Firebase.RTDB.deleteNode(&fbdo, transactionPath.c_str());
     } else {
         // Update retry count in transaction
+        FirebaseJsonData retryCount;
+        json.get(retryCount, "retryCount");
+        int currentRetries = retryCount.intValue;
+        
         FirebaseJson updateJson;
-        updateJson.set("retryCount", json.get("retryCount").to<int>() + 1);
+        updateJson.set("retryCount", currentRetries + 1);
         Firebase.RTDB.updateNode(&fbdo, transactionPath.c_str(), &updateJson);
     }
     
