@@ -33,8 +33,9 @@ A smart WiFi configuration manager for ESP32 devices with integrated trip loggin
   - Offline operation capability
   - Break time tracking between trips
 - **Data Synchronization**:
+  - Trip data logging every 30 seconds to SD card
   - Automatic 5-minute interval Firebase updates
-  - Trip data logging every 5 minutes
+  - Independent logging and sync intervals
   - Automatic retry for failed uploads
   - Status tracking for each trip
   - Persistent storage of unsent data
@@ -125,7 +126,7 @@ SD_FAULT_LED:  GPIO25
    - Generates unique trip numbers
 
 5. **Data Storage Flow**:
-   - Records trip data every minute
+   - Records trip data every 30 seconds consistently
    - Stores data on SD card with sync status (0 = unsynced)
    - Attempts immediate Firebase upload
    - Updates sync status to 1 when upload succeeds

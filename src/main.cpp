@@ -31,10 +31,11 @@ FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
 
-// Firebase sync variables
+// Timing intervals
 unsigned long lastFirebaseSync = 0;
-const unsigned long FIREBASE_SYNC_INTERVAL = 60000; // 1 minutes
-// const unsigned long FIREBASE_SYNC_INTERVAL = 300000; // 5 minutes
+unsigned long lastDataLog = 0;
+const unsigned long FIREBASE_SYNC_INTERVAL = 60000; // 5 minutes for Firebase sync
+const unsigned long DATA_LOG_INTERVAL = 30000;  // 30 seconds for data logging
 bool firebaseInitialized = false;
 
 // Constants for preferences and logging
@@ -593,8 +594,11 @@ void loop() {
 
     // Handle RTC and SD logging
     if (rtcOK && sdOK) {
-        if (millis() - lastLogMillis >= FIREBASE_SYNC_INTERVAL || firstLog) {
-            lastLogMillis = millis();
+        unsigned long currentMillis = millis();
+        
+        // Data logging every 30 seconds
+        if (currentMillis - lastDataLog >= DATA_LOG_INTERVAL || firstLog) {
+            lastDataLog = currentMillis;
             firstLog = false;
 
             DateTime now = rtc.now();
@@ -620,44 +624,25 @@ void loop() {
                            currentTrip.breakTime + "," +
                            "0";  // 0 = not synced
 
-            // Detailed logging for debugging
-            Serial.println("\n--- Trip Logging Details ---");
-            Serial.printf("Trip Number: %d\n", currentTrip.number);
-            Serial.printf("Start Time: %s\n", currentTrip.startTime.c_str());
-            Serial.printf("End Time: %s\n", currentTrip.endTime.c_str());
-            Serial.printf("Trip Duration: %s\n", currentTrip.duration.c_str());
-            Serial.printf("Break Time: %s\n", currentTrip.breakTime.c_str());
-            Serial.println("Full CSV Line:");
-            Serial.println(logLine);
-
-            // Save to SD card
+            // Always save to SD card regardless of WiFi status
             logFile = SD.open(filename, FILE_APPEND);
             if (logFile) {
                 logFile.println(logLine);
                 logFile.close();
-                Serial.println("Successfully wrote to SD card");
-                
-                // Read back and verify the last few lines
-                File readFile = SD.open(filename, FILE_READ);
-                if (readFile) {
-                    Serial.println("\nLast entries in SD card:");
-                    // Calculate seek position ensuring it doesn't go negative
-                    size_t seekPos = (readFile.size() > 512) ? (readFile.size() - 512) : 0;
-                    readFile.seek(seekPos);
-                    while (readFile.available()) {
-                        String line = readFile.readStringUntil('\n');
-                        if (line.length() > 0) {
-                            Serial.println(line);
-                        }
-                    }
-                    readFile.close();
-                }
+                Serial.println("\n--- Trip Logged Successfully ---");
+                Serial.printf("Trip Number: %d\n", currentTrip.number);
+                Serial.printf("Time: %s\n", currentTrip.endTime.c_str());
+                Serial.printf("Duration: %s\n", currentTrip.duration.c_str());
             } else {
                 Serial.println("Failed to write to SD card!");
             }
 
-            // Try to publish to Firebase
-            if (!publishTripToFirebase(currentTrip)) {
+            // Only attempt Firebase upload if connected
+            if (WiFi.status() == WL_CONNECTED && firebaseInitialized) {
+                if (!publishTripToFirebase(currentTrip)) {
+                    pendingTrips.push_back(currentTrip);
+                }
+            } else {
                 pendingTrips.push_back(currentTrip);
             }
         }
