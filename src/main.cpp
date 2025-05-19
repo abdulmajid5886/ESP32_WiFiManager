@@ -514,7 +514,13 @@ void loop() {
     // Handle WiFi connection
     static unsigned long lastWiFiCheck = 0;
     static bool portalStarted = false;
+    static bool portalActive = false;
     const unsigned long WIFI_CHECK_INTERVAL = 300000; // Check WiFi every 5 minutes
+
+    if (portalActive) {
+        // Do nothing while portal is active
+        return;
+    }
     
     if (WiFi.status() != WL_CONNECTED && !portalStarted) {
         unsigned long currentMillis = millis();
@@ -530,23 +536,27 @@ void loop() {
                 Serial.println(WiFi.SSID());
                 Serial.println(WiFi.localIP().toString());
                 portalStarted = false;
+                portalActive = false;
             } else {
                 // Only start portal if it hasn't been started yet
                 if (!portalStarted) {
                     Serial.println("Couldn't connect to any saved networks");
                     Serial.println("Starting config portal...");
                     portalStarted = true;
+                    portalActive = true;
                     
                     if (!wm.startConfigPortal("WASA Grw", "12345678")) {
                         Serial.println("Failed to connect or hit timeout");
                         portalStarted = false;
-                        lastWiFiCheck = currentMillis - WIFI_CHECK_INTERVAL + 60000; // Try again in 1 minute
+                        portalActive = false;
+                        lastWiFiCheck = currentMillis + 300000; // Wait 5 minutes before next attempt
                     }
                 }
             }
         }
     } else if (WiFi.status() == WL_CONNECTED) {
-        portalStarted = false; // Reset portal flag when connected
+        portalStarted = false; // Reset portal flags when connected
+        portalActive = false;
     }
 
     // Handle RTC and SD logging
