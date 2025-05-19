@@ -19,27 +19,32 @@ A smart WiFi configuration manager for ESP32 devices with integrated trip loggin
   - Add new networks without losing existing ones
   - Supports custom IP and gateway settings
 - **Smart Network Management**:
+  - 30-second connection timeout for each attempt
   - Automatic connection to strongest available network
   - Falls back to AP mode if no networks are available
+  - Periodic reconnection attempts every 5 minutes
   - Smart reconnection with failover support
 - **Auto-Recovery**:
   - Attempts reconnection to all saved networks
   - Falls back to configuration portal as last resort
   - Auto-restarts after new configuration
+  - Power loss detection and safe shutdown
+  - Emergency data saving on power failure
 - **Trip Logging System**:
   - Real-time trip tracking with RTC
   - Local storage on SD card
   - Automatic Firebase synchronization
   - Offline operation capability
   - Break time tracking between trips
+  - Power-aware trip end handling
 - **Data Synchronization**:
   - Automatic 5-minute interval Firebase updates
   - Trip data logging every 5 minutes
+  - Immediate sync attempts after reconnection
   - Automatic retry for failed uploads
   - Status tracking for each trip
   - Persistent storage of unsent data
-  - WiFi-dependent sync mechanism
-  - Offline operation with SD card backup
+  - WiFi-independent operation with SD card backup
 
 ## Hardware Requirements
 
@@ -47,6 +52,7 @@ A smart WiFi configuration manager for ESP32 devices with integrated trip loggin
 - DS3231 RTC Module
 - SD Card Module
 - Status LEDs (2x)
+- Voltage Divider for Power Monitoring
 - USB Cable for programming
 
 ## Pin Configuration
@@ -57,6 +63,7 @@ RTC_SCL: GPIO22
 SD_CS:   GPIO5
 RTC_FAULT_LED: GPIO33
 SD_FAULT_LED:  GPIO25
+POWER_SENSE_PIN: GPIO34  // ADC input for power monitoring
 ```
 
 ## Software Dependencies
@@ -98,9 +105,12 @@ SD_FAULT_LED:  GPIO25
 
 3. **Smart Network Management**:
    - Continuously monitors WiFi connection status
+   - 30-second timeout for connection attempts
    - Automatically tries all saved networks when disconnected
    - Maintains up to 5 different network configurations
    - Connects to the strongest available network
+   - Attempts reconnection every 5 minutes when offline
+   - Immediate data sync after successful reconnection
 
 4. **Trip Logging System**:
    - Initializes RTC and SD card
@@ -108,6 +118,8 @@ SD_FAULT_LED:  GPIO25
    - Records trip start time
    - Calculates and logs break duration
    - Generates unique trip numbers
+   - Monitors input power for safe shutdown
+   - Emergency data saving on power loss
 
 5. **Data Storage Flow**:
    - Records trip data every 30 seconds
@@ -170,11 +182,21 @@ SD_FAULT_LED:  GPIO25
    - Check WiFi connectivity
    - Verify Firebase credentials
    - Monitor serial output for error messages
+   - Check if device is attempting periodic reconnection
+   - Verify sync attempts after WiFi reconnection
 
-8. **Data Recovery**:
+8. **Power Issues**:
+   - Check input voltage level (should be above 4.5V)
+   - Verify power monitoring circuit connections
+   - Check if emergency shutdown is triggering incorrectly
+   - Monitor serial output for power status messages
+
+9. **Data Recovery**:
    - All trip data is stored on SD card
    - Firebase sync will retry automatically
    - Manual data export possible via SD card
+   - Check trip_log.csv for power loss notifications
+   - Verify last trip was properly ended
 
 ## File Structure
 

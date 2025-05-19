@@ -9,6 +9,7 @@
 #include <addons/TokenHelper.h>
 #include <addons/RTDBHelper.h>
 #include <time.h>
+#include "PowerManager.h"
 
 // Pin definitions
 #define RTC_SDA 21
@@ -423,10 +424,86 @@ void syncPendingTrips() {
     file.close();
 }
 
+// Function to handle graceful shutdown
+void endTrip(bool isPowerLoss = false) {
+    if (!rtcOK || !sdOK) return;
+
+    Serial.println("Ending trip...");
+    DateTime now = rtc.now();
+    TimeSpan duration = now - tripStartTime;
+
+    TripData finalTrip;
+    finalTrip.number = tripNumber;
+    finalTrip.startTime = formatDateTime(tripStartTime);
+    finalTrip.endTime = formatDateTime(now);
+    finalTrip.duration = formatDuration(duration);
+    finalTrip.synced = false;
+
+    // Save final trip data
+    String logLine = String(finalTrip.number) + "," + 
+                    finalTrip.startTime + "," + 
+                    finalTrip.endTime + "," + 
+                    finalTrip.duration;
+
+    // Write to SD
+    logFile = SD.open(filename, FILE_APPEND);
+    if (logFile) {
+        logFile.println(logLine);
+        logFile.println("Trip ended " + String(isPowerLoss ? "due to power loss" : "normally"));
+        logFile.close();
+    }
+
+    // Try to sync with Firebase if connected
+    if (WiFi.isConnected()) {
+        publishTripToFirebase(finalTrip);
+        
+        // Try to sync any pending trips
+        for (const auto& trip : pendingTrips) {
+            publishTripToFirebase(trip);
+        }
+    }
+
+    Serial.println("Trip ended successfully");
+}
+
+// Function to check power status and handle power loss
+void checkPowerStatus() {
+    static bool wasLow = false;
+    static unsigned long powerLowStartTime = 0;
+    const unsigned long POWER_LOW_TIMEOUT = 1000; // 1 second timeout
+
+    bool isLow = PowerManager::isPowerLow();
+    
+    if (isLow && !wasLow) {
+        // Power just went low
+        powerLowStartTime = millis();
+        wasLow = true;
+        Serial.println("Power low detected!");
+    } 
+    else if (isLow && wasLow) {
+        // Power still low, check timeout
+        if (millis() - powerLowStartTime >= POWER_LOW_TIMEOUT) {
+            Serial.println("Power loss confirmed, initiating emergency shutdown...");
+            endTrip(true);
+            // Wait for trip end to complete
+            delay(1000);
+            ESP.deepSleep(0);
+        }
+    }
+    else if (!isLow && wasLow) {
+        // Power restored
+        wasLow = false;
+        Serial.println("Power restored");
+    }
+}
+
 void setup() {
     Serial.begin(115200);
     Serial.println("\n Starting");
     
+    // Initialize power monitoring
+    PowerManager::begin();
+
     // Initialize RTC and SD card first
     initializeRTCAndSD();
     
@@ -506,25 +583,44 @@ void setup() {
 }
 
 void loop() {
-    // Handle WiFi connection
-    if (wifiMulti.run() != WL_CONNECTED) {
-        Serial.println("WiFi disconnected!");
+    // Check power status first
+    checkPowerStatus();
+
+    static unsigned long lastWiFiAttempt = 0;
+    const unsigned long WIFI_RETRY_INTERVAL = 300000; // 5 minutes
+
+    // Try to reconnect WiFi every 5 minutes if disconnected
+    if (WiFi.status() != WL_CONNECTED && millis() - lastWiFiAttempt >= WIFI_RETRY_INTERVAL) {
+        lastWiFiAttempt = millis();
+        Serial.println("Attempting periodic WiFi reconnection...");
         
-        // Try to connect to saved networks for 10 seconds
         unsigned long startAttemptTime = millis();
-        while (wifiMulti.run() != WL_CONNECTED && millis() - startAttemptTime < 10000) {
+        while (wifiMulti.run() != WL_CONNECTED && millis() - startAttemptTime < 30000) {
+            checkPowerStatus();
             delay(500);
             Serial.print(".");
         }
         
-        // If still not connected, start config portal
-        if (WiFi.status() != WL_CONNECTED) {
-            Serial.println("\nCouldn't connect to any saved networks");
-            if (!wm.startConfigPortal("WASA Grw", "12345678")) {
-                Serial.println("Failed to connect or hit timeout");
-                delay(3000);
-                ESP.restart();
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("\nWiFi reconnected!");
+            Serial.println(WiFi.SSID());
+            Serial.println(WiFi.localIP().toString());
+            
+            // After reconnection, try to sync pending data
+            if (!pendingTrips.empty()) {
+                Serial.println("Attempting to sync pending trips after reconnection...");
+                auto it = pendingTrips.begin();
+                while (it != pendingTrips.end()) {
+                    if (publishTripToFirebase(*it)) {
+                        it = pendingTrips.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
             }
+            syncPendingTrips();
+        } else {
+            Serial.println("\nCouldn't reconnect to any saved networks, continuing offline");
         }
     }
 
@@ -585,5 +681,5 @@ void loop() {
         }
     }
     
-    delay(1000); // Prevent watchdog issues
+    delay(100); // Shorter delay to ensure more responsive power monitoring
 }
