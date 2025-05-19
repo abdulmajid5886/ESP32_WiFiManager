@@ -238,7 +238,7 @@ void initializeRTCAndSD() {
         if (!SD.exists(filename) || SD.open(filename, FILE_READ).size() == 0) {
             logFile = SD.open(filename, FILE_WRITE);
             if (logFile) {
-                logFile.println("Trip No.,Start DateTime,End DateTime,Duration,Break Time");
+                logFile.println("Trip No.,Start DateTime,End DateTime,Duration,Break Time,Synced");
                 logFile.close();
             }
         }
@@ -395,8 +395,20 @@ bool publishTripToFirebase(const TripData& trip) {
 void syncPendingTrips() {
     if (!rtcOK || !sdOK || !WiFi.isConnected()) return;
 
+    // Open file for reading
     File file = SD.open(filename, FILE_READ);
     if (!file) return;
+
+    // Create a temporary file for writing updated sync status
+    File tempFile = SD.open("/temp.csv", FILE_WRITE);
+    if (!tempFile) {
+        file.close();
+        return;
+    }
+
+    // Copy header
+    String header = file.readStringUntil('\n');
+    tempFile.println(header);
 
     String line;
     while (file.available()) {
@@ -406,26 +418,46 @@ void syncPendingTrips() {
             int comma1 = line.indexOf(',');
             int comma2 = line.indexOf(',', comma1 + 1);
             int comma3 = line.indexOf(',', comma2 + 1);
-            
             int comma4 = line.indexOf(',', comma3 + 1);
-            if (comma1 > 0 && comma2 > 0 && comma3 > 0 && comma4 > 0) {
-                TripData trip;
-                trip.number = line.substring(0, comma1).toInt();
-                trip.startTime = line.substring(comma1 + 1, comma2);
-                trip.endTime = line.substring(comma2 + 1, comma3);
-                trip.duration = line.substring(comma3 + 1, comma4);
-                trip.breakTime = line.substring(comma4 + 1);
-                trip.synced = false;
+            int comma5 = line.indexOf(',', comma4 + 1);
+            
+            if (comma1 > 0 && comma2 > 0 && comma3 > 0 && comma4 > 0 && comma5 > 0) {
+                // Check if record is already synced
+                int syncStatus = line.substring(comma5 + 1).toInt();
                 
-                if (publishTripToFirebase(trip)) {
-                    trip.synced = true;
+                if (syncStatus == 0) {  // Only process unsynced records
+                    TripData trip;
+                    trip.number = line.substring(0, comma1).toInt();
+                    trip.startTime = line.substring(comma1 + 1, comma2);
+                    trip.endTime = line.substring(comma2 + 1, comma3);
+                    trip.duration = line.substring(comma3 + 1, comma4);
+                    trip.breakTime = line.substring(comma4 + 1, comma5);
+                    trip.synced = false;
+
+                    // Try to publish to Firebase
+                    if (publishTripToFirebase(trip)) {
+                        // Update sync status to 1 if successful
+                        tempFile.println(line.substring(0, comma5 + 1) + "1");
+                        Serial.printf("Updated sync status for trip %d\n", trip.number);
+                    } else {
+                        // Keep sync status as 0 if failed
+                        tempFile.println(line);
+                        pendingTrips.push_back(trip);
+                    }
                 } else {
-                    pendingTrips.push_back(trip);
+                    // Already synced, copy line as is
+                    tempFile.println(line);
                 }
             }
         }
     }
+
     file.close();
+    tempFile.close();
+
+    // Replace original file with updated one
+    SD.remove(filename);
+    SD.rename("/temp.csv", filename);
 }
 
 void setup() {
@@ -585,7 +617,8 @@ void loop() {
                            currentTrip.startTime + "," + 
                            currentTrip.endTime + "," + 
                            currentTrip.duration + "," +
-                           currentTrip.breakTime;
+                           currentTrip.breakTime + "," +
+                           "0";  // 0 = not synced
 
             // Detailed logging for debugging
             Serial.println("\n--- Trip Logging Details ---");

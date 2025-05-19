@@ -102,7 +102,22 @@ SD_FAULT_LED:  GPIO25
    - Maintains up to 5 different network configurations
    - Connects to the strongest available network
 
-4. **Trip Logging System**:
+4. **Connectivity Behavior**:
+   - Checks WiFi connection every 5 minutes
+   - During connection loss:
+     * Continues logging trips to SD card
+     * Marks new trips as unsynced (status = 0)
+     * Queues data for future synchronization
+   - Upon reconnection:
+     * Automatically resumes Firebase synchronization
+     * Syncs all pending (unsynced) records
+     * Updates sync status for successful uploads
+   - Portal Activation:
+     * Starts config portal if all connection attempts fail
+     * Portal timeout after 3 minutes
+     * Returns to normal operation after new network added
+
+5. **Trip Logging System**:
    - Initializes RTC and SD card
    - Creates/opens trip log file
    - Records trip start time
@@ -110,22 +125,36 @@ SD_FAULT_LED:  GPIO25
    - Generates unique trip numbers
 
 5. **Data Storage Flow**:
-   - Records trip data every 30 seconds
-   - Stores data on SD card
+   - Records trip data every minute
+   - Stores data on SD card with sync status (0 = unsynced)
    - Attempts immediate Firebase upload
-   - Queues failed uploads for retry
+   - Updates sync status to 1 when upload succeeds
+   - Maintains data integrity even during power loss
 
 6. **Firebase Synchronization**:
-   - Attempts upload every 5 minutes
-   - Marks successful uploads as "OK"
-   - Retries failed uploads automatically
-   - Maintains sync queue in memory
+   - Attempts upload every 5 minutes when WiFi is available
+   - Only processes records marked as unsynced (status = 0)
+   - Updates sync status to 1 after successful upload
+   - Retries failed uploads in next sync cycle
+   - Prevents duplicate uploads with sync status tracking
 
-7. **Error Handling**:
-   - LED indicators for hardware faults
-   - Offline operation capability
-   - Automatic error recovery
-   - Data integrity protection
+7. **Error Handling and Recovery**:
+   - LED indicators for hardware faults:
+     * RTC_FAULT_LED (GPIO33) for RTC issues
+     * SD_FAULT_LED (GPIO25) for SD card problems
+   - Offline operation capability:
+     * Continues logging to SD card when offline
+     * Maintains sync status for each record
+     * No data loss during connection issues
+   - Automatic error recovery:
+     * Retries failed network connections
+     * Attempts to reconnect to all saved networks
+     * Falls back to config portal if needed
+   - Data integrity protection:
+     * Safe file updates using temporary files
+     * Atomic operations for sync status updates
+     * Verification of written data
+     * Persistent storage of sync state
 
 ## Usage
 
@@ -192,16 +221,20 @@ ESP32_WiFiManager/
 
 The trip log file (trip_log.csv) contains the following columns:
 ```
-Trip No., Start DateTime, End DateTime, Duration
+Trip No., Start DateTime, End DateTime, Duration, Break Time, Synced
 ```
 
 Example:
 ```
-1, 23-05-18 10:00:00, 23-05-18 10:30:00, 00:30:00
+1, 23-05-18 10:00:00, 23-05-18 10:30:00, 00:30:00, 00:00:00, 1
 Trip 1 Duration:, 00:30:00
 Break Time:, 00:15:00
-2, 23-05-18 10:45:00, 23-05-18 11:15:00, 00:30:00
+2, 23-05-18 10:45:00, 23-05-18 11:15:00, 00:30:00, 00:15:00, 0
 ```
+
+The 'Synced' column indicates:
+- 0: Trip data not yet uploaded to Firebase
+- 1: Trip successfully synchronized with Firebase
 
 ## Firebase Data Structure
 
@@ -214,7 +247,9 @@ Trips are stored in Firebase with the following structure:
       "startTime": "23-05-18 10:00:00",
       "endTime": "23-05-18 10:30:00",
       "duration": "00:30:00",
-      "status": "OK"
+      "breakTime": "00:15:00",
+      "status": "OK",
+      "uploadTimestamp": 1684441200
     }
   }
 }
