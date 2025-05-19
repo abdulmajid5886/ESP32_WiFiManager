@@ -33,13 +33,15 @@ A smart WiFi configuration manager for ESP32 devices with integrated trip loggin
   - Offline operation capability
   - Break time tracking between trips
 - **Data Synchronization**:
-  - Automatic 5-minute interval Firebase updates
-  - Trip data logging every 5 minutes
+  - Independent SD card logging and Firebase sync
+  - Trip data logged every 30 seconds to SD card
+  - Firebase sync attempts every 5 minutes
+  - Break time tracking and synchronization
   - Automatic retry for failed uploads
   - Status tracking for each trip
   - Persistent storage of unsent data
-  - WiFi-dependent sync mechanism
-  - Offline operation with SD card backup
+  - WiFi-independent operation with SD card
+  - Queued synchronization when offline
 
 ## Hardware Requirements
 
@@ -110,10 +112,12 @@ SD_FAULT_LED:  GPIO25
    - Generates unique trip numbers
 
 5. **Data Storage Flow**:
-   - Records trip data every 30 seconds
-   - Stores data on SD card
-   - Attempts immediate Firebase upload
-   - Queues failed uploads for retry
+   - Records trip data every 30 seconds on SD card
+   - Independent Firebase sync process
+   - Prioritizes reliable local storage
+   - Queues data for later sync when offline
+   - Includes break time calculations
+   - Maintains data integrity during power cycles
 
 6. **Firebase Synchronization**:
    - Attempts upload every 5 minutes
@@ -192,15 +196,17 @@ ESP32_WiFiManager/
 
 The trip log file (trip_log.csv) contains the following columns:
 ```
-Trip No., Start DateTime, End DateTime, Duration
+Trip No., Start DateTime, End DateTime, Duration, Break Time
 ```
 
 Example:
 ```
-1, 23-05-18 10:00:00, 23-05-18 10:30:00, 00:30:00
+----------------------------------------
+1, 23-05-18 10:00:00, 23-05-18 10:30:00, 00:30:00, 00:00:00
 Trip 1 Duration:, 00:30:00
 Break Time:, 00:15:00
-2, 23-05-18 10:45:00, 23-05-18 11:15:00, 00:30:00
+----------------------------------------
+2, 23-05-18 10:45:00, 23-05-18 11:15:00, 00:30:00, 00:15:00
 ```
 
 ## Firebase Data Structure
@@ -214,7 +220,9 @@ Trips are stored in Firebase with the following structure:
       "startTime": "23-05-18 10:00:00",
       "endTime": "23-05-18 10:30:00",
       "duration": "00:30:00",
-      "status": "OK"
+      "breakTime": "00:00:00",
+      "status": "OK",
+      "uploadTimestamp": 1684404000
     }
   }
 }

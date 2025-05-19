@@ -34,6 +34,7 @@ FirebaseConfig config;
 // Firebase sync variables
 unsigned long lastFirebaseSync = 0;
 const unsigned long FIREBASE_SYNC_INTERVAL = 300000; // 5 minutes
+const unsigned long SD_LOG_INTERVAL = 30000; // 30 seconds
 bool firebaseInitialized = false;
 
 // Constants for preferences and logging
@@ -55,6 +56,7 @@ struct TripData {
     String startTime;
     String endTime;
     String duration;
+    String breakTime;  // Added break time field
     bool synced;
 };
 
@@ -224,19 +226,31 @@ void initializeRTCAndSD() {
             TimeSpan breakDuration = tripStartTime - lastEndTime;
             TimeSpan tripDuration = lastEndTime - getLastStartTime();
 
+            // Log the break time and previous trip duration
             logFile = SD.open(filename, FILE_APPEND);
             if (logFile) {
+                // Add a separator line for better readability
+                logFile.println("----------------------------------------");
                 logFile.printf("Trip %d Duration:, %s\n", tripNumber - 1, formatDuration(tripDuration).c_str());
                 logFile.printf("Break Time:, %s\n", formatDuration(breakDuration).c_str());
+                logFile.println("----------------------------------------");
                 logFile.close();
             }
+            
+            // Create a TripData entry for the previous trip's break time
+            TripData previousTrip;
+            previousTrip.number = tripNumber - 1;
+            previousTrip.breakTime = formatDuration(breakDuration);
+            previousTrip.synced = false;
+            pendingTrips.push_back(previousTrip);
         }
 
         // Write CSV header if file is empty
         if (!SD.exists(filename) || SD.open(filename, FILE_READ).size() == 0) {
             logFile = SD.open(filename, FILE_WRITE);
             if (logFile) {
-                logFile.println("Trip No.,Start DateTime,End DateTime,Duration");
+                logFile.println("Trip No.,Start DateTime,End DateTime,Duration,Break Time");
+                logFile.println("----------------------------------------");
                 logFile.close();
             }
         }
@@ -367,6 +381,16 @@ bool publishTripToFirebase(const TripData& trip) {
     json.set("duration", trip.duration);
     json.set("status", "OK");
     json.set("uploadTimestamp", rtc.now().unixtime());
+    
+    // Calculate and add break time if this is not the first trip
+    if (trip.number > 1) {
+        DateTime tripStart = parseDateTime(trip.startTime);
+        DateTime lastEnd = getLastEndTime();
+        if (lastEnd.unixtime() > 0) {
+            TimeSpan breakDuration = tripStart - lastEnd;
+            json.set("breakTime", formatDuration(breakDuration));
+        }
+    }
 
     bool success = false;
     int retries = 3;
@@ -530,7 +554,8 @@ void loop() {
 
     // Handle RTC and SD logging
     if (rtcOK && sdOK) {
-        if (millis() - lastLogMillis >= FIREBASE_SYNC_INTERVAL || firstLog) {
+        // Log to SD card every 30 seconds
+        if (millis() - lastLogMillis >= SD_LOG_INTERVAL || firstLog) {
             lastLogMillis = millis();
             firstLog = false;
 
@@ -542,12 +567,21 @@ void loop() {
             currentTrip.startTime = formatDateTime(tripStartTime);
             currentTrip.endTime = formatDateTime(now);
             currentTrip.duration = formatDuration(duration);
+            
+            // Calculate break time if this isn't the first trip
+            if (lastEndTime.unixtime() > 0) {
+                TimeSpan breakDuration = tripStartTime - lastEndTime;
+                currentTrip.breakTime = formatDuration(breakDuration);
+            } else {
+                currentTrip.breakTime = "00:00:00";
+            }
             currentTrip.synced = false;
 
             String logLine = String(currentTrip.number) + "," + 
                            currentTrip.startTime + "," + 
                            currentTrip.endTime + "," + 
-                           currentTrip.duration;
+                           currentTrip.duration + "," +
+                           currentTrip.breakTime;
 
             Serial.println(logLine);
 
@@ -558,15 +592,16 @@ void loop() {
                 logFile.close();
             }
 
-            // Try to publish to Firebase
-            if (!publishTripToFirebase(currentTrip)) {
-                pendingTrips.push_back(currentTrip);
-            }
+            // Add to pending trips for Firebase sync
+            pendingTrips.push_back(currentTrip);
         }
 
-        // Handle Firebase sync interval
-        if (WiFi.isConnected() && millis() - lastFirebaseSync >= FIREBASE_SYNC_INTERVAL) {
+        // Handle Firebase sync interval independently
+        if (millis() - lastFirebaseSync >= FIREBASE_SYNC_INTERVAL) {
             lastFirebaseSync = millis();
+            
+            // Only attempt Firebase operations if WiFi is connected
+            if (WiFi.isConnected()) {
             
             // Try to publish any pending trips
             if (!pendingTrips.empty()) {
@@ -582,8 +617,9 @@ void loop() {
 
             // Sync any trips from SD card that might have been missed
             syncPendingTrips();
+            }
         }
     }
     
-    delay(1000); // Prevent watchdog issues
+    delay(100); // Prevent watchdog issues while allowing more frequent checks
 }
