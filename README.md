@@ -33,11 +33,13 @@ A smart WiFi configuration manager for ESP32 devices with integrated trip loggin
   - Offline operation capability
   - Break time tracking between trips
 - **Data Synchronization**:
-  - 5-minute interval Firebase updates
+  - Automatic 5-minute interval Firebase updates
+  - Trip data logging every 5 minutes
   - Automatic retry for failed uploads
   - Status tracking for each trip
   - Persistent storage of unsent data
   - WiFi-dependent sync mechanism
+  - Offline operation with SD card backup
 
 ## Hardware Requirements
 
