@@ -11,12 +11,25 @@
 #include <time.h>
 #include "PowerManager.h"
 
+// Timing constants
+const unsigned long WIFI_CONNECT_TIMEOUT = 30000;    // 30 seconds timeout for initial connection
+const unsigned long WIFI_RETRY_INTERVAL = 300000;    // 5 minutes between reconnection attempts
+const unsigned long UPLOAD_BLINK_DURATION = 500;     // 500ms LED blink duration
+const unsigned long FIREBASE_SYNC_INTERVAL = 300000; // 5 minutes between Firebase syncs
+const unsigned long POWER_LOW_TIMEOUT = 1000;        // 1 second power low confirmation
+
 // Pin definitions
 #define RTC_SDA 21
 #define RTC_SCL 22
 #define SD_CS 5
 #define RTC_FAULT_LED 33
 #define SD_FAULT_LED 25
+#define INTERNET_STATUS_LED 23
+#define DATA_UPLOAD_LED 35
+
+// Status LED States
+bool uploadLedState = false;
+unsigned long lastUploadBlinkTime = 0;
 
 // WiFiManager object
 WiFiManager wm;
@@ -34,7 +47,6 @@ FirebaseConfig config;
 
 // Firebase sync variables
 unsigned long lastFirebaseSync = 0;
-const unsigned long FIREBASE_SYNC_INTERVAL = 300000; // 5 minutes
 bool firebaseInitialized = false;
 
 // Constants for preferences and logging
@@ -56,7 +68,10 @@ struct TripData {
     String startTime;
     String endTime;
     String duration;
+    String breakTime;  // Duration between this trip and previous trip
     bool synced;
+    bool isPowerLoss;  // true for RESET, false for OK
+    String status;     // "OK" or "RESET"
 };
 
 std::vector<TripData> pendingTrips;
@@ -158,6 +173,58 @@ DateTime getLastStartTime() {
     return parseDateTime(startTimeStr);
 }
 
+// Function to update WiFi status LED
+void updateWiFiStatusLED() {
+    digitalWrite(INTERNET_STATUS_LED, WiFi.status() == WL_CONNECTED ? HIGH : LOW);
+}
+
+// Function to blink upload LED
+void blinkUploadLED() {
+    uploadLedState = true;
+    digitalWrite(DATA_UPLOAD_LED, HIGH);
+    lastUploadBlinkTime = millis();
+}
+
+// Function to handle upload LED state
+void handleUploadLED() {
+    if (uploadLedState && (millis() - lastUploadBlinkTime >= UPLOAD_BLINK_DURATION)) {
+        uploadLedState = false;
+        digitalWrite(DATA_UPLOAD_LED, LOW);
+    }
+}
+
+// Function to attempt WiFi connection with timeout
+bool attemptWiFiConnection(bool isInitialConnection = false) {
+    unsigned long startAttempt = millis();
+    Serial.println(isInitialConnection ? "Attempting initial WiFi connection..." : "Attempting periodic WiFi reconnection...");
+    
+    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < WIFI_CONNECT_TIMEOUT) {
+        wifiMulti.run();
+        checkPowerStatus();  // Keep checking power while attempting connection
+        updateWiFiStatusLED();  // Update LED state
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println();
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("WiFi connected!");
+        Serial.println("SSID: " + WiFi.SSID());
+        Serial.println("IP: " + WiFi.localIP().toString());
+        
+        // Initialize Firebase on first connection
+        if (isInitialConnection) {
+            syncTimeWithNTP();
+            initFirebase();
+        }
+        
+        return true;
+    } else {
+        Serial.println(isInitialConnection ? "Initial connection failed" : "Reconnection failed");
+        return false;
+    }
+}
+
 void saveConfigCallback() {
     Serial.println("Configuration saved");
     
@@ -191,10 +258,17 @@ void saveConfigCallback() {
 }
 
 void initializeRTCAndSD() {
+    // Initialize all status LEDs
     pinMode(RTC_FAULT_LED, OUTPUT);
     pinMode(SD_FAULT_LED, OUTPUT);
+    pinMode(INTERNET_STATUS_LED, OUTPUT);  // WiFi connection status
+    pinMode(DATA_UPLOAD_LED, OUTPUT);      // Firebase upload indicator
+    
+    // Set initial LED states
     digitalWrite(RTC_FAULT_LED, LOW);
     digitalWrite(SD_FAULT_LED, LOW);
+    digitalWrite(INTERNET_STATUS_LED, LOW);
+    digitalWrite(DATA_UPLOAD_LED, LOW);
 
     Wire.begin(RTC_SDA, RTC_SCL);
 
@@ -225,12 +299,19 @@ void initializeRTCAndSD() {
             TimeSpan breakDuration = tripStartTime - lastEndTime;
             TimeSpan tripDuration = lastEndTime - getLastStartTime();
 
+            String breakTimeStr = formatDuration(breakDuration);
+            
             logFile = SD.open(filename, FILE_APPEND);
             if (logFile) {
                 logFile.printf("Trip %d Duration:, %s\n", tripNumber - 1, formatDuration(tripDuration).c_str());
-                logFile.printf("Break Time:, %s\n", formatDuration(breakDuration).c_str());
+                logFile.printf("Break Time:, %s\n", breakTimeStr.c_str());
                 logFile.close();
             }
+            
+            // Store break time for the current trip
+            TripData currentTrip;
+            currentTrip.number = tripNumber;
+            currentTrip.breakTime = breakTimeStr;
         }
 
         // Write CSV header if file is empty
@@ -344,7 +425,7 @@ void initFirebase() {
 }
 
 // Function to save trip to Firebase
-bool publishTripToFirebase(const TripData& trip) {
+bool publishTripToFirebase(const TripData& trip, bool isPowerLoss = false) {
     if (!firebaseInitialized) {
         Serial.println("Firebase not initialized, attempting to initialize...");
         initFirebase();
@@ -366,7 +447,11 @@ bool publishTripToFirebase(const TripData& trip) {
     json.set("startTime", trip.startTime);
     json.set("endTime", trip.endTime);
     json.set("duration", trip.duration);
-    json.set("status", "OK");
+    json.set("breakTime", trip.breakTime);
+    json.set("status", trip.isPowerLoss ? "RESET" : "OK");
+    json.set("statusDetails", trip.isPowerLoss ? 
+        "Trip ended abnormally - Power loss detected" : 
+        "Trip ended normally - Clean shutdown");
     json.set("uploadTimestamp", rtc.now().unixtime());
 
     bool success = false;
@@ -379,6 +464,7 @@ bool publishTripToFirebase(const TripData& trip) {
         if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
             Serial.printf("Trip %d published to Firebase successfully\n", trip.number);
             success = true;
+            blinkUploadLED(); // Blink LED on successful upload
         } else {
             Serial.printf("Firebase publish failed: %s\nRetrying... (%d attempts left)\n", 
                         fbdo.errorReason().c_str(), retries - 1);
@@ -413,7 +499,7 @@ void syncPendingTrips() {
                 trip.duration = line.substring(comma3 + 1);
                 trip.synced = false;
                 
-                if (publishTripToFirebase(trip)) {
+                if (publishTripToFirebase(trip, false)) {
                     trip.synced = true;
                 } else {
                     pendingTrips.push_back(trip);
@@ -439,27 +525,36 @@ void endTrip(bool isPowerLoss = false) {
     finalTrip.duration = formatDuration(duration);
     finalTrip.synced = false;
 
-    // Save final trip data
+    finalTrip.isPowerLoss = isPowerLoss;
+    finalTrip.status = isPowerLoss ? "RESET" : "OK";
+
+    // Save final trip data with status
     String logLine = String(finalTrip.number) + "," + 
                     finalTrip.startTime + "," + 
                     finalTrip.endTime + "," + 
-                    finalTrip.duration;
+                    finalTrip.duration + "," +
+                    finalTrip.status;
 
-    // Write to SD
+    // Write to SD with detailed status information
     logFile = SD.open(filename, FILE_APPEND);
     if (logFile) {
         logFile.println(logLine);
-        logFile.println("Trip ended " + String(isPowerLoss ? "due to power loss" : "normally"));
+        if (isPowerLoss) {
+            logFile.println("Trip ended abnormally - Power loss detected");
+            logFile.println("Last known state saved for recovery");
+        } else {
+            logFile.println("Trip ended normally - Clean shutdown");
+        }
         logFile.close();
     }
 
     // Try to sync with Firebase if connected
     if (WiFi.isConnected()) {
-        publishTripToFirebase(finalTrip);
+        publishTripToFirebase(finalTrip, isPowerLoss);
         
         // Try to sync any pending trips
         for (const auto& trip : pendingTrips) {
-            publishTripToFirebase(trip);
+            publishTripToFirebase(trip, false);
         }
     }
 
@@ -470,7 +565,6 @@ void endTrip(bool isPowerLoss = false) {
 void checkPowerStatus() {
     static bool wasLow = false;
     static unsigned long powerLowStartTime = 0;
-    const unsigned long POWER_LOW_TIMEOUT = 1000; // 1 second timeout
 
     bool isLow = PowerManager::isPowerLow();
     
@@ -503,6 +597,12 @@ void setup() {
     
     // Initialize power monitoring
     PowerManager::begin();
+    
+    // Initialize status LEDs
+    pinMode(INTERNET_STATUS_LED, OUTPUT);
+    pinMode(DATA_UPLOAD_LED, OUTPUT);
+    digitalWrite(INTERNET_STATUS_LED, LOW);
+    digitalWrite(DATA_UPLOAD_LED, LOW);
 
     // Initialize RTC and SD card first
     initializeRTCAndSD();
@@ -546,21 +646,9 @@ void setup() {
     wm.setRemoveDuplicateAPs(true);
     wm.setDebugOutput(true);
 
-    // Try to connect to any of the saved networks
+    // Try to connect to any of the saved networks with 30 second timeout
     if (networkCount > 0) {
-        Serial.println("Trying to connect to saved networks...");
-        if (wifiMulti.run() == WL_CONNECTED) {
-            Serial.println("Connected to WiFi!");
-            Serial.println(WiFi.SSID());
-            Serial.println(WiFi.localIP().toString());
-            
-            // Sync time and initialize Firebase after WiFi is connected
-            syncTimeWithNTP();
-            initFirebase();
-            
-            Serial.println("Connected to WiFi!");
-            Serial.println(WiFi.SSID());
-            Serial.println(WiFi.localIP().toString());
+        if (attemptWiFiConnection(true)) {
             return;
         }
     }
@@ -585,33 +673,23 @@ void setup() {
 void loop() {
     // Check power status first
     checkPowerStatus();
+    
+    // Update LED states
+    updateWiFiStatusLED();
+    handleUploadLED();
 
     static unsigned long lastWiFiAttempt = 0;
-    const unsigned long WIFI_RETRY_INTERVAL = 300000; // 5 minutes
 
     // Try to reconnect WiFi every 5 minutes if disconnected
     if (WiFi.status() != WL_CONNECTED && millis() - lastWiFiAttempt >= WIFI_RETRY_INTERVAL) {
         lastWiFiAttempt = millis();
-        Serial.println("Attempting periodic WiFi reconnection...");
-        
-        unsigned long startAttemptTime = millis();
-        while (wifiMulti.run() != WL_CONNECTED && millis() - startAttemptTime < 30000) {
-            checkPowerStatus();
-            delay(500);
-            Serial.print(".");
-        }
-        
-        if (WiFi.status() == WL_CONNECTED) {
-            Serial.println("\nWiFi reconnected!");
-            Serial.println(WiFi.SSID());
-            Serial.println(WiFi.localIP().toString());
-            
+        if (attemptWiFiConnection()) {
             // After reconnection, try to sync pending data
             if (!pendingTrips.empty()) {
                 Serial.println("Attempting to sync pending trips after reconnection...");
                 auto it = pendingTrips.begin();
                 while (it != pendingTrips.end()) {
-                    if (publishTripToFirebase(*it)) {
+                    if (publishTripToFirebase(*it, false)) {
                         it = pendingTrips.erase(it);
                     } else {
                         ++it;
@@ -620,7 +698,7 @@ void loop() {
             }
             syncPendingTrips();
         } else {
-            Serial.println("\nCouldn't reconnect to any saved networks, continuing offline");
+            Serial.println("Couldn't reconnect to any saved networks, continuing offline");
         }
     }
 
@@ -639,6 +717,8 @@ void loop() {
             currentTrip.endTime = formatDateTime(now);
             currentTrip.duration = formatDuration(duration);
             currentTrip.synced = false;
+            currentTrip.isPowerLoss = false;  // Regular update, not a power loss
+            currentTrip.status = "OK";
 
             String logLine = String(currentTrip.number) + "," + 
                            currentTrip.startTime + "," + 
@@ -655,7 +735,7 @@ void loop() {
             }
 
             // Try to publish to Firebase
-            if (!publishTripToFirebase(currentTrip)) {
+            if (!publishTripToFirebase(currentTrip, false)) {
                 pendingTrips.push_back(currentTrip);
             }
         }
@@ -668,7 +748,7 @@ void loop() {
             if (!pendingTrips.empty()) {
                 auto it = pendingTrips.begin();
                 while (it != pendingTrips.end()) {
-                    if (publishTripToFirebase(*it)) {
+                    if (publishTripToFirebase(*it, false)) {
                         it = pendingTrips.erase(it);
                     } else {
                         ++it;
@@ -680,6 +760,12 @@ void loop() {
             syncPendingTrips();
         }
     }
+    
+    // Update WiFi status LED
+    updateWiFiStatusLED();
+    
+    // Handle upload LED state
+    handleUploadLED();
     
     delay(100); // Shorter delay to ensure more responsive power monitoring
 }

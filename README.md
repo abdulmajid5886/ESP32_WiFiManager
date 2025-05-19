@@ -8,6 +8,9 @@ A smart WiFi configuration manager for ESP32 devices with integrated trip loggin
   - Store up to 5 different WiFi networks
   - Automatic connection to available networks
   - Seamless failover between networks
+  - Network priority based on signal strength
+  - Preserves credentials across power cycles
+  - Add networks without losing existing ones
 - **Dual Mode Operation**:
   - Station (STA) mode for normal operation
   - Access Point (AP) mode for configuration
@@ -31,12 +34,24 @@ A smart WiFi configuration manager for ESP32 devices with integrated trip loggin
   - Power loss detection and safe shutdown
   - Emergency data saving on power failure
 - **Trip Logging System**:
-  - Real-time trip tracking with RTC
-  - Local storage on SD card
-  - Automatic Firebase synchronization
-  - Offline operation capability
-  - Break time tracking between trips
-  - Power-aware trip end handling
+  - Initializes RTC and SD card
+  - Creates/opens trip log file
+  - Records trip start time
+  - Calculates and logs break duration
+  - Generates unique trip numbers
+  - Trip Status Tracking:
+    * "OK": Normal trip end (clean power off)
+    * "RESET": Abnormal end (power loss/crash)
+  - Comprehensive Status Logging:
+    * Logs detailed status messages
+    * Records power loss events
+    * Tracks recovery attempts
+  - Emergency Data Protection:
+    * Immediate status writing on power loss
+    * Last known state preservation
+    * Recovery information logging
+  - Monitors input power for safe shutdown
+  - Emergency data saving on power loss
 - **Data Synchronization**:
   - Automatic 5-minute interval Firebase updates
   - Trip data logging every 5 minutes
@@ -63,7 +78,9 @@ RTC_SCL: GPIO22
 SD_CS:   GPIO5
 RTC_FAULT_LED: GPIO33
 SD_FAULT_LED:  GPIO25
-POWER_SENSE_PIN: GPIO34  // ADC input for power monitoring
+INTERNET_STATUS_LED: GPIO23  // WiFi connection indicator
+DATA_UPLOAD_LED: GPIO35      // Firebase upload indicator
+POWER_SENSE_PIN: GPIO34      // ADC input for power monitoring
 ```
 
 ## Software Dependencies
@@ -116,28 +133,140 @@ POWER_SENSE_PIN: GPIO34  // ADC input for power monitoring
    - Initializes RTC and SD card
    - Creates/opens trip log file
    - Records trip start time
-   - Calculates and logs break duration
+   - Break Time Tracking:
+     * Calculates time between trips
+     * Records break duration in logs
+     * Stores break time in Firebase
+     * Persists across power cycles
    - Generates unique trip numbers
+   - Trip Status Tracking:
+     * "OK": Normal trip end (clean power off)
+     * "RESET": Abnormal end (power loss/crash)
+   - Comprehensive Status Logging:
+     * Logs detailed status messages
+     * Records power loss events
+     * Tracks recovery attempts
+   - Emergency Data Protection:
+     * Immediate status writing on power loss
+     * Last known state preservation
+     * Recovery information logging
    - Monitors input power for safe shutdown
    - Emergency data saving on power loss
 
 5. **Data Storage Flow**:
-   - Records trip data every 30 seconds
-   - Stores data on SD card
-   - Attempts immediate Firebase upload
-   - Queues failed uploads for retry
+   - Records trip data every 5 minutes
+   - Status-Aware Storage:
+     * Stores trip data with status flags
+     * "OK" for normal operations
+     * "RESET" for abnormal terminations
+     * Includes detailed status messages
+   - Immediate status updates on power events
+   - Multiple storage layers for redundancy
+   - Emergency backup on power loss
 
 6. **Firebase Synchronization**:
    - Attempts upload every 5 minutes
-   - Marks successful uploads as "OK"
+   - Marks normal trips as "OK", power loss as "RESET"
    - Retries failed uploads automatically
    - Maintains sync queue in memory
+   - Auto-sync when WiFi reconnects
 
-7. **Error Handling**:
-   - LED indicators for hardware faults
+7. **Status Indication**:
+   - RTC_FAULT_LED (GPIO33): Indicates RTC initialization failure
+   - SD_FAULT_LED (GPIO25): Indicates SD card initialization failure
+   - INTERNET_STATUS_LED (GPIO23): Shows WiFi connection status
+   - DATA_UPLOAD_LED (GPIO35): Blinks on successful Firebase uploads
    - Offline operation capability
    - Automatic error recovery
    - Data integrity protection
+
+## Trip Status Management
+
+The system uses a robust status tracking mechanism to maintain data integrity and provide insights into trip completion states:
+
+1. **Status Types**:
+   - **OK Status**:
+     * Indicates normal trip completion
+     * Vehicle properly turned off
+     * ESP32 had time for clean shutdown
+     * All data properly saved and synced
+   
+   - **RESET Status**:
+     * Indicates abnormal trip termination
+     * Unexpected power loss
+     * System crash or reset
+     * Emergency data recovery needed
+
+2. **Status Recording**:
+   - **SD Card Storage**:
+     * Status saved with each trip record
+     * Detailed status messages included
+     * Recovery information logged
+     * Power loss events documented
+   
+   - **Firebase Storage**:
+     * Status synced to cloud
+     * Includes detailed status messages
+     * Timestamps for tracking
+     * Recovery status updates
+
+3. **Recovery Handling**:
+   - System checks last trip status on boot
+   - Attempts to recover incomplete trips
+   - Marks recovered trips as "RESET"
+   - Logs recovery attempts and results
+
+4. **Data Integrity**:
+   - Multiple storage locations
+   - Immediate status updates
+   - Power loss detection
+   - Recovery validation
+   - Sync status tracking
+
+This status system helps in:
+- Monitoring system health
+- Tracking power issues
+- Validating data integrity
+- Debugging system problems
+- Identifying potential issues
+
+## WiFi Network Management
+
+1. **Network Storage**:
+   - Up to 5 networks stored in permanent memory
+   - Credentials saved in ESP32's NVS (Non-Volatile Storage)
+   - Protected storage using Preferences library
+   - Network list persists through power cycles
+
+2. **Network Priority**:
+   - Networks sorted by signal strength (RSSI)
+   - Automatic connection to strongest network
+   - Dynamic switching if signal degrades
+   - Failover to next strongest network
+
+3. **Network Configuration**:
+   - Web-based configuration portal
+   - Add networks through captive portal
+   - Existing networks preserved when adding new ones
+   - Oldest network replaced when limit reached
+
+4. **Connection Management**:
+   - 30-second timeout on initial connection
+   - 5-minute retry interval for reconnection
+   - Automatic reconnection in background
+   - LED indication of connection status
+
+5. **Security**:
+   - Credentials stored securely in NVS
+   - WPA/WPA2 support
+   - Optional static IP configuration
+   - Customizable AP password
+
+6. **Recovery Features**:
+   - Multiple reset options
+   - Clear all networks if needed
+   - Fallback to AP mode
+   - Configuration backup option
 
 ## Usage
 
@@ -190,6 +319,11 @@ POWER_SENSE_PIN: GPIO34  // ADC input for power monitoring
    - Verify power monitoring circuit connections
    - Check if emergency shutdown is triggering incorrectly
    - Monitor serial output for power status messages
+   - Review trip status logs for patterns:
+     * Frequent "RESET" statuses indicate power problems
+     * Check timing of power loss events
+     * Verify if specific conditions trigger issues
+   - Analyze Firebase logs for system health patterns
 
 9. **Data Recovery**:
    - All trip data is stored on SD card
@@ -214,16 +348,23 @@ ESP32_WiFiManager/
 
 The trip log file (trip_log.csv) contains the following columns:
 ```
-Trip No., Start DateTime, End DateTime, Duration
+Trip No., Start DateTime, End DateTime, Duration, Status
 ```
 
 Example:
 ```
-1, 23-05-18 10:00:00, 23-05-18 10:30:00, 00:30:00
+1, 23-05-18 10:00:00, 23-05-18 10:30:00, 00:30:00, OK
+Trip ended normally - Clean shutdown
 Trip 1 Duration:, 00:30:00
 Break Time:, 00:15:00
-2, 23-05-18 10:45:00, 23-05-18 11:15:00, 00:30:00
+2, 23-05-18 10:45:00, 23-05-18 11:15:00, 00:30:00, RESET
+Trip ended abnormally - Power loss detected
+Last known state saved for recovery
 ```
+
+Status Values:
+- **OK**: Trip ended properly (normal shutdown/ignition off)
+- **RESET**: Trip ended abnormally (power loss/crash/unexpected reset)
 
 ## Firebase Data Structure
 
@@ -236,7 +377,10 @@ Trips are stored in Firebase with the following structure:
       "startTime": "23-05-18 10:00:00",
       "endTime": "23-05-18 10:30:00",
       "duration": "00:30:00",
-      "status": "OK"
+      "breakTime": "00:15:00",  // Duration between this trip and previous trip
+      "status": "OK",  // "OK" for normal end, "RESET" for power loss
+      "statusDetails": "Trip ended normally - Clean shutdown",
+      "uploadTimestamp": 1621234567  // Unix timestamp of upload
     }
   }
 }
@@ -265,7 +409,12 @@ Trips are stored in Firebase with the following structure:
 3. **Hardware Setup**:
    - Connect RTC to SDA (GPIO21) and SCL (GPIO22)
    - Connect SD card module to GPIO5 (CS)
-   - Connect status LEDs to GPIO33 and GPIO25
+   - Connect status LEDs:
+     * RTC fault LED to GPIO33
+     * SD card fault LED to GPIO25
+     * Internet status LED to GPIO23
+     * Data upload LED to GPIO35
+   - Connect power monitoring circuit to GPIO34
 
 4. **Upload Code**:
    ```bash
