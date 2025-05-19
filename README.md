@@ -1,6 +1,6 @@
 # ESP32 WiFi Manager with Trip Logger
 
-A smart WiFi configuration manager for ESP32 devices with integrated trip logging functionality, featuring RTC-based time tracking, SD card storage, and Firebase synchronization.
+A smart WiFi configuration manager for ESP32 devices with integrated trip logging functionality, featuring RTC-based time tracking, SD card storage, and Firebase synchronization with enhanced data integrity and error recovery mechanisms. The system ensures zero data loss through multiple backup systems and transaction-based synchronization.
 
 ## Features
 
