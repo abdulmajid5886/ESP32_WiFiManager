@@ -14,8 +14,13 @@
 #define RTC_SDA 21
 #define RTC_SCL 22
 #define SD_CS 5
-#define RTC_FAULT_LED 33
-#define SD_FAULT_LED 25
+
+// LED Pin definitions
+#define POWER_LED 26        // Power indication LED
+#define SD_FAULT_LED 25     // SD Card fault LED
+#define RTC_FAULT_LED 33    // RTC/Timer fault LED
+#define WIFI_STATUS_LED 32  // WiFi connectivity LED
+#define FIREBASE_LED 35     // Firebase data publish LED
 
 // WiFiManager object
 WiFiManager wm;
@@ -201,21 +206,28 @@ void initializeRTCAndSD() {
     Wire.begin(RTC_SDA, RTC_SCL);
 
     // RTC Initialization
+    Serial.println("\n[RTC] Initializing RTC module...");
     if (!rtc.begin()) {
-        Serial.println("RTC not found!");
+        Serial.println("[RTC] ERROR: Module not found!");
+        Serial.println("[RTC] Please check wiring on pins SDA:" + String(RTC_SDA) + " SCL:" + String(RTC_SCL));
         digitalWrite(RTC_FAULT_LED, HIGH);
     } else {
         rtcOK = true;
-        Serial.println("RTC initialized.");
+        Serial.println("[RTC] Module initialized successfully");
+        Serial.printf("[RTC] Current time: %s\n", formatDateTime(rtc.now()).c_str());
     }
 
     // SD Initialization
+    Serial.println("\n[SD] Initializing SD card...");
     if (!SD.begin(SD_CS)) {
-        Serial.println("SD Card failed!");
+        Serial.println("[SD] ERROR: Card Mount Failed!");
+        Serial.println("[SD] Please check wiring on pin CS:" + String(SD_CS));
         digitalWrite(SD_FAULT_LED, HIGH);
     } else {
         sdOK = true;
-        Serial.println("SD Card initialized.");
+        Serial.println("[SD] Card mounted successfully");
+        uint64_t cardSize = SD.cardSize() / (1024 * 1024);
+        Serial.printf("[SD] Card Size: %lluMB\n", cardSize);
     }
 
     if (rtcOK && sdOK) {
@@ -248,15 +260,31 @@ void initializeRTCAndSD() {
     }
 }
 
-// Function to sync time with NTP
+// Function to initialize all LEDs
+void initializeLEDs() {
+    pinMode(POWER_LED, OUTPUT);
+    pinMode(SD_FAULT_LED, OUTPUT);
+    pinMode(RTC_FAULT_LED, OUTPUT);
+    pinMode(WIFI_STATUS_LED, OUTPUT);
+    pinMode(FIREBASE_LED, OUTPUT);
+
+    // Set initial LED states
+    digitalWrite(POWER_LED, HIGH);      // Power ON
+    digitalWrite(SD_FAULT_LED, LOW);    // No fault initially
+    digitalWrite(RTC_FAULT_LED, LOW);   // No fault initially
+    digitalWrite(WIFI_STATUS_LED, LOW); // Disconnected initially
+    digitalWrite(FIREBASE_LED, LOW);    // No publishing initially
+}
+
 void syncTimeWithNTP() {
+    Serial.println("[NTP] Configuring time server...");
     configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
     
-    Serial.println("Waiting for NTP time sync...");
+    Serial.println("[NTP] Waiting for time sync...");
     time_t now = time(nullptr);
     int retries = 10;
     while (now < 24 * 3600 && retries-- > 0) {
-        Serial.print(".");
+        Serial.printf("[NTP] Attempt %d/10, timestamp: %ld\n", 10-retries, now);
         delay(1000);
         now = time(nullptr);
     }
@@ -347,11 +375,14 @@ void initFirebase() {
 
 // Function to save trip to Firebase
 bool publishTripToFirebase(const TripData& trip) {
+    digitalWrite(FIREBASE_LED, HIGH); // Turn on LED while attempting to publish
+    
     if (!firebaseInitialized) {
         Serial.println("Firebase not initialized, attempting to initialize...");
         initFirebase();
         if (!firebaseInitialized) {
             Serial.println("Firebase initialization failed, cannot publish trip");
+            digitalWrite(FIREBASE_LED, LOW); // Turn off LED on failure
             return false;
         }
     }
@@ -376,33 +407,46 @@ bool publishTripToFirebase(const TripData& trip) {
     int retries = 3;
     
     while (retries > 0 && !success) {
-        Serial.printf("Attempting to publish trip %d (attempt %d)...\n", 
-                     trip.number, 4 - retries);
+        Serial.printf("[Firebase] Trip #%d | Attempt %d/3 | Path: %s | ", 
+                     trip.number, 4 - retries, path.c_str());
                      
         if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
-            Serial.printf("Trip %d published to Firebase successfully\n", trip.number);
+            Serial.printf("Status: ✓ Success | Time: %s\n", formatDateTime(rtc.now()).c_str());
             success = true;
+            // Blink Firebase LED to indicate success
+            digitalWrite(FIREBASE_LED, HIGH);
+            delay(100);
+            digitalWrite(FIREBASE_LED, LOW);
         } else {
-            Serial.printf("Firebase publish failed: %s\nRetrying... (%d attempts left)\n", 
-                        fbdo.errorReason().c_str(), retries - 1);
+            Serial.printf("Status: ✗ Failed | Error: %s\n", fbdo.errorReason().c_str());
             retries--;
             delay(1000);
         }
     }
+    digitalWrite(FIREBASE_LED, LOW); // Ensure LED is off after publish attempt
     return success;
 }
 
 // Function to read and publish pending trips
 void syncPendingTrips() {
-    if (!rtcOK || !sdOK || !WiFi.isConnected()) return;
+    if (!rtcOK || !sdOK || !WiFi.isConnected()) {
+        Serial.println("[Sync] Skipped - Prerequisites not met: RTC=" + String(rtcOK) + ", SD=" + String(sdOK) + ", WiFi=" + String(WiFi.isConnected()));
+        return;
+    }
 
+    Serial.println("\n[Sync] Starting pending trips sync...");
+    
     // Open file for reading
     File file = SD.open(filename, FILE_READ);
-    if (!file) return;
+    if (!file) {
+        Serial.println("[Sync] ERROR: Could not open source file: " + String(filename));
+        return;
+    }
 
     // Create a temporary file for writing updated sync status
     File tempFile = SD.open("/temp.csv", FILE_WRITE);
     if (!tempFile) {
+        Serial.println("[Sync] ERROR: Could not create temp file");
         file.close();
         return;
     }
@@ -410,6 +454,7 @@ void syncPendingTrips() {
     // Copy header
     String header = file.readStringUntil('\n');
     tempFile.println(header);
+    Serial.println("[Sync] CSV Header copied successfully");
 
     String line;
     while (file.available()) {
@@ -435,15 +480,17 @@ void syncPendingTrips() {
                     trip.breakTime = line.substring(comma4 + 1, comma5);
                     trip.synced = false;
 
+                    Serial.printf("[Sync] Processing Trip #%d | Start: %s | End: %s | Duration: %s | Break: %s\n", 
+                        trip.number, trip.startTime.c_str(), trip.endTime.c_str(), trip.duration.c_str(), trip.breakTime.c_str());
+
                     // Try to publish to Firebase
                     if (publishTripToFirebase(trip)) {
-                        // Update sync status to 1 if successful
                         tempFile.println(line.substring(0, comma5 + 1) + "1");
-                        Serial.printf("Updated sync status for trip %d\n", trip.number);
+                        Serial.printf("[Sync] Trip #%d ✓ Published successfully\n", trip.number);
                     } else {
-                        // Keep sync status as 0 if failed
                         tempFile.println(line);
                         pendingTrips.push_back(trip);
+                        Serial.printf("[Sync] Trip #%d ✗ Publish failed - Added to pending queue\n", trip.number);
                     }
                 } else {
                     // Already synced, copy line as is
@@ -464,6 +511,9 @@ void syncPendingTrips() {
 void setup() {
     Serial.begin(115200);
     Serial.println("\n Starting");
+    
+    // Initialize all LEDs first
+    initializeLEDs();
     
     // Initialize RTC and SD card first
     initializeRTCAndSD();
@@ -530,8 +580,8 @@ void setup() {
     Serial.println("Starting config portal...");
     if (!wm.startConfigPortal("WASA Grw", "12345678")) {
         Serial.println("Failed to connect or hit timeout");
-        delay(3000);
-        ESP.restart();
+        // Instead of resetting, we'll try again in the loop
+        return;
     }
     
     Serial.println("Connected to WiFi!");
@@ -546,49 +596,67 @@ void setup() {
 void loop() {
     // Handle WiFi connection
     static unsigned long lastWiFiCheck = 0;
+    static unsigned long lastLEDUpdate = 0;
     static bool portalStarted = false;
     static bool portalActive = false;
     const unsigned long WIFI_CHECK_INTERVAL = 300000; // Check WiFi every 5 minutes
+    const unsigned long LED_UPDATE_INTERVAL = 1000;   // Update LEDs every second
 
-    if (portalActive) {
-        // Do nothing while portal is active
-        return;
-    }
+    // Get current time
+    unsigned long currentMillis = millis();
     
-    if (WiFi.status() != WL_CONNECTED && !portalStarted) {
-        unsigned long currentMillis = millis();
-        
-        // Only try reconnecting every 5 minutes
-        if (currentMillis - lastWiFiCheck >= WIFI_CHECK_INTERVAL) {
+    // Update LED states
+    if (currentMillis - lastLEDUpdate >= LED_UPDATE_INTERVAL) {
+        lastLEDUpdate = currentMillis;
+        // Update WiFi LED
+        digitalWrite(WIFI_STATUS_LED, WiFi.status() == WL_CONNECTED ? HIGH : LOW);
+        // Update fault LEDs
+        digitalWrite(RTC_FAULT_LED, !rtcOK);
+        digitalWrite(SD_FAULT_LED, !sdOK);
+    }
+
+    // Handle WiFi reconnection without resetting
+    if (WiFi.status() != WL_CONNECTED) {
+        digitalWrite(WIFI_STATUS_LED, LOW); // Turn off WiFi LED when disconnected
+        if (!portalActive && currentMillis - lastWiFiCheck >= WIFI_CHECK_INTERVAL) {
             lastWiFiCheck = currentMillis;
-            Serial.println("WiFi disconnected! Attempting to reconnect...");
+            Serial.println("\n[WiFi] Status: Disconnected");
+            Serial.printf("[WiFi] Time since last check: %lu ms\n", currentMillis - lastWiFiCheck);
+            Serial.println("[WiFi] Attempting to reconnect...");
             
             // Try to connect to saved networks
-            if (wifiMulti.run(5000) == WL_CONNECTED) { // 5 second timeout for connection attempt
+            if (wifiMulti.run(5000) == WL_CONNECTED) {
+                digitalWrite(WIFI_STATUS_LED, HIGH); // Turn on WiFi LED when connected
                 Serial.println("Reconnected to WiFi!");
                 Serial.println(WiFi.SSID());
                 Serial.println(WiFi.localIP().toString());
                 portalStarted = false;
                 portalActive = false;
-            } else {
-                // Only start portal if it hasn't been started yet
-                if (!portalStarted) {
-                    Serial.println("Couldn't connect to any saved networks");
-                    Serial.println("Starting config portal...");
-                    portalStarted = true;
-                    portalActive = true;
-                    
-                    if (!wm.startConfigPortal("WASA Grw", "12345678")) {
-                        Serial.println("Failed to connect or hit timeout");
-                        portalStarted = false;
-                        portalActive = false;
-                        lastWiFiCheck = currentMillis + 300000; // Wait 5 minutes before next attempt
-                    }
+                
+                // Re-initialize Firebase if needed
+                if (!firebaseInitialized) {
+                    initFirebase();
+                }
+            } else if (!portalStarted) {
+                Serial.println("Couldn't connect to any saved networks");
+                Serial.println("Starting config portal...");
+                portalStarted = true;
+                portalActive = true;
+                
+                if (wm.startConfigPortal("WASA Grw", "12345678")) {
+                    Serial.println("Portal connection successful");
+                    portalStarted = false;
+                    portalActive = false;
+                } else {
+                    Serial.println("Portal connection failed or timed out");
+                    portalStarted = false;
+                    portalActive = false;
                 }
             }
         }
-    } else if (WiFi.status() == WL_CONNECTED) {
-        portalStarted = false; // Reset portal flags when connected
+    } else {
+        // Reset flags when connected
+        portalStarted = false;
         portalActive = false;
     }
 
@@ -625,14 +693,18 @@ void loop() {
                            "0";  // 0 = not synced
 
             // Always save to SD card regardless of WiFi status
+            Serial.println("\n[Logger] Attempting to save trip data to SD card...");
             logFile = SD.open(filename, FILE_APPEND);
             if (logFile) {
                 logFile.println(logLine);
                 logFile.close();
-                Serial.println("\n--- Trip Logged Successfully ---");
-                Serial.printf("Trip Number: %d\n", currentTrip.number);
-                Serial.printf("Time: %s\n", currentTrip.endTime.c_str());
-                Serial.printf("Duration: %s\n", currentTrip.duration.c_str());
+                Serial.println("[Logger] --- Trip Logged Successfully ---");
+                Serial.printf("[Logger] Trip Number: %d\n", currentTrip.number);
+                Serial.printf("[Logger] Start Time: %s\n", currentTrip.startTime.c_str());
+                Serial.printf("[Logger] End Time: %s\n", currentTrip.endTime.c_str());
+                Serial.printf("[Logger] Duration: %s\n", currentTrip.duration.c_str());
+                Serial.printf("[Logger] Break Time: %s\n", currentTrip.breakTime.c_str());
+                Serial.printf("[Logger] Sync Status: %s\n", currentTrip.synced ? "Synced" : "Pending");
             } else {
                 Serial.println("Failed to write to SD card!");
             }

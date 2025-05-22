@@ -52,13 +52,45 @@ A smart WiFi configuration manager for ESP32 devices with integrated trip loggin
 
 ## Pin Configuration
 
+### Core Connections
 ```
 RTC_SDA: GPIO21
 RTC_SCL: GPIO22
 SD_CS:   GPIO5
-RTC_FAULT_LED: GPIO33
-SD_FAULT_LED:  GPIO25
 ```
+
+### LED Indicators
+```
+POWER_LED:      GPIO26  // Power indication
+SD_FAULT_LED:   GPIO25  // SD Card fault indicator
+RTC_FAULT_LED:  GPIO33  // RTC/Timer fault indicator
+WIFI_STATUS_LED: GPIO32 // WiFi connectivity status
+FIREBASE_LED:   GPIO35  // Firebase data publish status
+```
+
+### LED Status Guide
+- **Power LED (GPIO26)**
+  - ON: Device is powered and running
+  - OFF: No power
+
+- **SD Card Fault LED (GPIO25)**
+  - OFF: SD card working normally
+  - ON: SD card error or not detected
+
+- **RTC Fault LED (GPIO33)**
+  - OFF: RTC working normally
+  - ON: RTC error or not detected
+
+- **WiFi Status LED (GPIO32)**
+  - ON: Connected to WiFi
+  - OFF: Disconnected from WiFi
+  - BLINKING: Attempting to connect
+
+- **Firebase LED (GPIO35)**
+  - OFF: Idle
+  - ON: Attempting to publish data
+  - BLINK: Successful data publish
+  - RAPID BLINK: Failed to publish
 
 ## Software Dependencies
 
@@ -316,10 +348,90 @@ To reset all WiFi settings and clear saved networks:
    - When AP mode starts, any new configuration will be added to existing networks
    - Up to 5 networks can be stored before oldest are overwritten
 
-## License
+## Debugging
 
-This project is open-source and available under the MIT License.
+The system provides comprehensive debugging information through:
+
+1. **Serial Monitor Output**:
+   - Baud Rate: 115200
+   - Prefixed logs for easy filtering:
+     - `[RTC]`: RTC-related operations
+     - `[SD]`: SD card operations
+     - `[WiFi]`: WiFi connection status
+     - `[NTP]`: Time synchronization
+     - `[Firebase]`: Database operations
+     - `[Sync]`: Data synchronization status
+     - `[Logger]`: Trip logging information
+
+2. **LED Indicators**:
+   - Visual feedback for all major subsystems
+   - Quick status assessment without serial monitor
+   - Fault indication for hardware issues
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Device Resets**
+   - Check power supply stability
+   - Ensure proper initialization of all components
+   - Monitor serial output for watchdog triggers
+
+2. **WiFi Connection Issues**
+   - Check WiFi LED status
+   - Verify saved network credentials
+   - Monitor connection attempts in serial output
+   - Check if the network is in range
+
+3. **Data Logging Issues**
+   - Check SD Card LED for hardware faults
+   - Verify SD card is properly formatted (FAT32)
+   - Check available space on SD card
+   - Monitor serial output for write errors
+
+4. **Time Synchronization Issues**
+   - Check RTC LED status
+   - Verify internet connectivity for NTP
+   - Check serial output for sync attempts
+   - Verify RTC battery voltage
+
+5. **Firebase Sync Issues**
+   - Monitor Firebase LED behavior
+   - Check internet connectivity
+   - Verify Firebase credentials
+   - Check serial output for detailed error messages
+
+### LED Pattern Guide
+
+1. **Normal Operation**
+   - Power LED: Solid ON
+   - All fault LEDs: OFF
+   - WiFi LED: Solid ON
+   - Firebase LED: Occasional blinks during sync
+
+2. **Error States**
+   - Fault LEDs ON: Check corresponding hardware
+   - WiFi LED OFF: Connection issues
+   - Firebase LED rapid blink: Sync failures
+
+## Maintenance
+
+1. **Regular Checks**
+   - Monitor SD card space
+   - Check RTC battery voltage
+   - Verify Firebase quota usage
+   - Review system logs
+
+2. **Periodic Tasks**
+   - Backup SD card data
+   - Clean up old Firebase records
+   - Update WiFi credentials if changed
+   - Check for firmware updates
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct, and the process for submitting pull requests.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details
