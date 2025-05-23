@@ -105,15 +105,35 @@ FIREBASE_LED:   GPIO35  // Firebase data publish status
 ## Firebase Setup
 
 1. **Create Firebase Project**:
-   - Go to Firebase Console
-   - Create a new project
+   - Go to Firebase Console (https://console.firebase.google.com)
+   - Create a new project or select an existing one
    - Enable Realtime Database
+   - Set up database rules for security
    - Get your database URL and API key
 
 2. **Configure Firebase Credentials**:
-   - Open platformio.ini
-   - Update FIREBASE_DATABASE_URL
-   - Update FIREBASE_API_KEY
+   - Open platformio.ini in your project
+   - Update the following build flags:
+     ```ini
+     build_flags = 
+         '-DFIREBASE_DATABASE_URL="your-database-url"'
+         '-DFIREBASE_API_KEY="your-api-key"'
+     ```
+   Note: Replace "your-api-key" with your actual Firebase API key. The API key should be kept secure and never shared publicly.
+
+3. **Database Rules Setup**:
+   - In Firebase Console, go to Realtime Database > Rules
+   - Configure appropriate read/write permissions
+   - Example basic rules for development:
+     ```json
+     {
+       "rules": {
+         ".read": true,
+         ".write": true
+       }
+     }
+     ```
+   Note: For production, implement proper authentication and security rules.
 
 ## How It Works
 
@@ -435,3 +455,28 @@ Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduc
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details
+
+
+## realtime database structure
+
+/{deviceName}/                   # Device name as top level
+    ├── status/                 # Device status information
+    │   ├── status             # "Online"/"Offline"
+    │   ├── lastConnection     # Timestamp
+    │   ├── ip                 # Current IP address
+    │   ├── ssid               # Connected WiFi network
+    │   ├── rssi              # Signal strength
+    │   └── uptime            # Device uptime in seconds
+    │
+    └── trips/                 # All trips for this device
+        ├── 1/                 # Trip data by number
+        │   ├── deviceName     
+        │   ├── tripNumber
+        │   ├── startTime
+        │   ├── endTime
+        │   ├── duration
+        │   ├── breakTime
+        │   ├── status
+        │   └── uploadTimestamp
+        ├── 2/
+        └── .../

@@ -22,6 +22,11 @@
 #define WIFI_STATUS_LED 32  // WiFi connectivity LED
 #define FIREBASE_LED 35     // Firebase data publish LED
 
+// Device Identification
+#define DEFAULT_DEVICE_NAME "WASA-Grw"  // Default device name
+const char* DEVICE_NAME_KEY = "WG001";  // Key for storing device name in preferences
+String deviceName;
+
 // WiFiManager object
 WiFiManager wm;
 WiFiMulti wifiMulti;
@@ -36,9 +41,11 @@ FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
 
-// Timing intervals
+// Timing intervals and status
 unsigned long lastFirebaseSync = 0;
 unsigned long lastDataLog = 0;
+unsigned long lastStatusUpdate = 0;  // For device status updates
+unsigned long deviceStartTime = 0;   // For tracking uptime
 const unsigned long FIREBASE_SYNC_INTERVAL = 60000; // 5 minutes for Firebase sync
 const unsigned long DATA_LOG_INTERVAL = 30000;  // 30 seconds for data logging
 bool firebaseInitialized = false;
@@ -47,6 +54,7 @@ bool firebaseInitialized = false;
 const char* PREF_NAMESPACE = "wifi_creds";
 const int MAX_NETWORKS = 5;  // Maximum number of networks to store
 const char* filename = "/trip_log.csv";
+const unsigned long STATUS_UPDATE_INTERVAL = 30000; // Update device status every 30 seconds
 
 // Trip logging variables
 DateTime tripStartTime;
@@ -85,6 +93,45 @@ String formatDuration(const TimeSpan& ts) {
     char buf[10];
     sprintf(buf, "%02d:%02d:%02d", ts.hours(), ts.minutes() % 60, ts.seconds() % 60);
     return String(buf);
+}
+
+// Initialize device name from preferences or set default
+void initializeDeviceName() {
+    preferences.begin(PREF_NAMESPACE, false);
+    deviceName = preferences.getString(DEVICE_NAME_KEY, "");
+    if (deviceName.length() == 0) {
+        // Generate a unique device name using part of MAC address
+        uint8_t mac[6];
+        WiFi.macAddress(mac);
+        char defaultName[20];
+        sprintf(defaultName, "%s_%02X%02X", DEFAULT_DEVICE_NAME, mac[4], mac[5]);
+        deviceName = String(defaultName);
+        preferences.putString(DEVICE_NAME_KEY, deviceName);
+    }
+    preferences.end();
+    Serial.printf("Device Name: %s\n", deviceName.c_str());
+}
+
+// Update device status in Firebase
+void updateDeviceStatus() {
+    if (!Firebase.ready() || WiFi.status() != WL_CONNECTED) {
+        return;
+    }
+
+    FirebaseJson json;
+    json.set("status", "Online");
+    json.set("lastConnection", rtc.now().unixtime());
+    json.set("ip", WiFi.localIP().toString());
+    json.set("ssid", WiFi.SSID());
+    json.set("rssi", WiFi.RSSI());
+    json.set("uptime", (millis() - deviceStartTime) / 1000);  // Uptime in seconds
+
+    String statusPath = deviceName + "/status";
+    if (Firebase.RTDB.setJSON(&fbdo, statusPath.c_str(), &json)) {
+        Serial.println("Status updated successfully");
+    } else {
+        Serial.printf("Status update failed: %s\n", fbdo.errorReason().c_str());
+    }
 }
 
 // Parse "yy-mm-dd hh:mm:ss" into DateTime
@@ -392,9 +439,10 @@ bool publishTripToFirebase(const TripData& trip) {
         return false;
     }
 
-    String path = "trips/" + String(trip.number);
+    String path = deviceName + "/trips/" + String(trip.number);
     
     FirebaseJson json;
+    json.set("deviceName", deviceName);
     json.set("tripNumber", trip.number);
     json.set("startTime", trip.startTime);
     json.set("endTime", trip.endTime);
@@ -512,8 +560,13 @@ void setup() {
     Serial.begin(115200);
     Serial.println("\n Starting");
     
+    deviceStartTime = millis();
+    
     // Initialize all LEDs first
     initializeLEDs();
+    
+    // Initialize device name
+    initializeDeviceName();
     
     // Initialize RTC and SD card first
     initializeRTCAndSD();
@@ -537,6 +590,9 @@ void setup() {
         }
     }
     preferences.end();
+
+    // Initialize device name
+    initializeDeviceName();
 
     // Callbacks
     wm.setSaveConfigCallback(saveConfigCallback);
@@ -601,6 +657,12 @@ void loop() {
     static bool portalActive = false;
     const unsigned long WIFI_CHECK_INTERVAL = 300000; // Check WiFi every 5 minutes
     const unsigned long LED_UPDATE_INTERVAL = 1000;   // Update LEDs every second
+
+    // Update device status in Firebase
+    if (WiFi.status() == WL_CONNECTED && millis() - lastStatusUpdate >= STATUS_UPDATE_INTERVAL) {
+        lastStatusUpdate = millis();
+        updateDeviceStatus();
+    }
 
     // Get current time
     unsigned long currentMillis = millis();
@@ -688,8 +750,8 @@ void loop() {
             String logLine = String(currentTrip.number) + "," + 
                            currentTrip.startTime + "," + 
                            currentTrip.endTime + "," + 
-                           currentTrip.duration + "," +
-                           currentTrip.breakTime + "," +
+                           currentTrip.duration + "," + 
+                           currentTrip.breakTime + "," + 
                            "0";  // 0 = not synced
 
             // Always save to SD card regardless of WiFi status
