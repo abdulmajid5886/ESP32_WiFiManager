@@ -15,16 +15,26 @@
 #define RTC_SCL 22
 #define SD_CS 5
 
-// LED Pin definitions
-#define POWER_LED 26        // Power indication LED
-#define SD_FAULT_LED 25     // SD Card fault LED
-#define RTC_FAULT_LED 33    // RTC/Timer fault LED
-#define WIFI_STATUS_LED 32  // WiFi connectivity LED
-#define FIREBASE_LED 35     // Firebase data publish LED
+// LED Pin definitions V1 (Rent 1)
+// #define POWER_LED 26        // Power indication LED
+// #define SD_FAULT_LED 25     // SD Card fault LED
+// #define RTC_FAULT_LED 33    // RTC/Timer fault LED
+// #define WIFI_STATUS_LED 32  // WiFi connectivity LED
+// #define FIREBASE_LED 35     // Firebase data publish LED
+
+
+// LED Pin definitions V2 (W200)
+#define POWER_LED 32        // Power indication LED
+#define SD_FAULT_LED 33     // SD Card fault LED
+#define RTC_FAULT_LED 25    // RTC/Timer fault LED
+#define WIFI_STATUS_LED 26  // WiFi connectivity LED
+#define FIREBASE_LED 27     // Firebase data publish LED
 
 // Device Identification
-#define DEFAULT_DEVICE_NAME "WASA-Grw"  // Default device name
-const char* DEVICE_NAME_KEY = "WG001";  // Key for storing device name in preferences
+// #define DEFAULT_DEVICE_NAME "WASA_Grw_Rent1"  // Default device name
+// const char* DEVICE_NAME_KEY = "WG001_R1";  // Key for storing device name in preferences
+#define DEFAULT_DEVICE_NAME "WASA_Grw_W200"  // Default device name
+const char* DEVICE_NAME_KEY = "WG002_W200";  // Key for storing device name in preferences
 String deviceName;
 
 // WiFiManager object
